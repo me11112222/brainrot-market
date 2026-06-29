@@ -1,0 +1,18 @@
+[Unit]
+Description=BrainrotBot Marketplace (Node/discord.js)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# クローンした場所に合わせて変更（例: /home/USER/brainrot-market）
+WorkingDirectory=/home/USER/brainrot-market
+# `which node` のパスに合わせて変更（NodeSource導入なら /usr/bin/node）
+ExecStart=/usr/bin/node src/index.js
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+# .env は WorkingDirectory から dotenv が自動読込（DISCORD_TOKEN/CLIENT_ID/GUILD_ID/CATALOG_PATH）
+
+[Install]
+WantedBy=multi-user.target

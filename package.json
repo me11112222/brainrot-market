@@ -1,0 +1,18 @@
+{
+  "name": "brainrot-bot",
+  "version": "0.1.0",
+  "description": "ブレインロットファイト用の自作Discord Bot（マーケットプレイス + レベル機能）",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^1.0.1",
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.7"
+  }
+}
