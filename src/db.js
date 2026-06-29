@@ -422,6 +422,9 @@ export function allEmojis() {
 export function deleteEmoji(name) {
   db.prepare(`DELETE FROM emojis WHERE name=?`).run(name);
 }
+export function clearEmojis() {
+  db.prepare(`DELETE FROM emojis`).run();
+}
 export function emojiCount() {
   return db.prepare(`SELECT COUNT(*) AS c FROM emojis`).get().c;
 }

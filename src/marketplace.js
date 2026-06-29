@@ -1195,15 +1195,15 @@ export function startRoomExpiryLoop(client) {
   }, 60 * 1000);
 }
 
-// 起動時：削除済みカスタム絵文字をDBから除去（選択メニューが壊れるのを防ぐ）
+// 起動時：DBの絵文字IDを「アプリ絵文字」と突合し、存在しないものを除去（メニューが壊れるのを防ぐ）
 export async function syncEmojisAcrossGuilds(client) {
   try {
-    const have = new Set();
-    for (const g of client.guilds.cache.values()) {
-      const em = await g.emojis.fetch().catch(() => null);
-      if (em) for (const e of em.values()) have.add(e.id);
-    }
-    if (!have.size) return; // 取得失敗時は何もしない（消しすぎ防止）
+    const appId = client.application?.id;
+    if (!appId) return;
+    const res = await client.rest.get(`/applications/${appId}/emojis`).catch(() => null);
+    const items = res && Array.isArray(res.items) ? res.items : Array.isArray(res) ? res : null;
+    if (!items) return; // 取得失敗時は何もしない（消しすぎ防止）
+    const have = new Set(items.map((e) => e.id));
     let pruned = 0;
     for (const row of db.allEmojis()) {
       if (!have.has(row.emoji_id)) {
@@ -1211,7 +1211,7 @@ export async function syncEmojisAcrossGuilds(client) {
         pruned++;
       }
     }
-    if (pruned) console.log(`🧹 絵文字DB整合: ${pruned}件除去（削除済み）`);
+    if (pruned) console.log(`🧹 絵文字DB整合: ${pruned}件除去（アプリ絵文字に無いもの）`);
   } catch (e) {
     console.error('絵文字同期失敗:', e);
   }
