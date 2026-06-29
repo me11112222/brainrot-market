@@ -162,6 +162,17 @@ export function searchListings(keyword, limit = 5) {
     .all(`%${keyword}%`, limit);
 }
 
+// 逆引き：相手の「ほしいもの(want)」をキーワード検索（自分が持ってる物の出し先を探す）
+export function searchByWant(keyword, limit = 10) {
+  return db
+    .prepare(
+      `SELECT * FROM listings
+       WHERE status='active' AND want_item LIKE ?
+       ORDER BY created_at DESC LIMIT ?`,
+    )
+    .all(`%${keyword}%`, limit);
+}
+
 export function listByUser(userId) {
   return db
     .prepare(

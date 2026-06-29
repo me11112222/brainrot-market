@@ -145,6 +145,17 @@ const D = {
   },
   pick_deal: { ja: '取引する出品を選ぶ', en: 'Pick a listing to trade' },
   power_label: { ja: '⚔️ 戦闘力', en: '⚔️ Power' },
+  want_search: { ja: '相手のほしい物で探す', en: 'Search by what sellers want' },
+  want_modal_title: { ja: '相手のほしい物で探す', en: 'Search by sellers’ wants' },
+  want_modal_label: {
+    ja: '相手が求めてるもの（自分が出せる物）',
+    en: 'What the seller wants (what you can offer)',
+  },
+  want_results: { ja: '💱「{kw}」を求めてる出品 {n}件:', en: '💱 {n} listing(s) wanting “{kw}”:' },
+  want_no_match: {
+    ja: '💱「{kw}」を求めてる出品は今ないみたい。別のワードでも試してね。',
+    en: '💱 No listings want “{kw}” right now. Try another keyword.',
+  },
 
   // ランキング
   btn_ranking: { ja: 'ランキング / Ranking', en: 'ランキング / Ranking' },

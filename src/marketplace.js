@@ -21,9 +21,9 @@ import { t, L } from './i18n.js';
 import { cleanText, contentIssue, rateOk, cleanupBuckets } from './moderation.js';
 
 const COLOR = 0x57f287;
-// 取引ルーム：無反応10分で警告（出品者にPING）→さらに5分（計15分）で削除。
-const ROOM_WARN = 10 * 60 * 1000; // 10分無反応で「あと5分で削除」警告＋ホストPing
-const ROOM_IDLE_TTL = 15 * 60 * 1000; // 15分無反応で削除
+// 取引ルーム：無反応5分で警告（残り時間表示＋ホストPing）→計10分で削除＆自動再出品。
+const ROOM_WARN = 5 * 60 * 1000; // 5分無反応で「あと約5分で削除」警告＋ホストPing
+const ROOM_IDLE_TTL = 10 * 60 * 1000; // 10分無反応で削除（＋自動再出品）
 const ROOM_HARD_MAX = 24 * 60 * 60 * 1000; // 活動があっても24hで強制終了（保険）
 const LISTING_TTL = 7 * 24 * 60 * 60 * 1000; // 出品は7日で自動失効
 // 取引ルームの常設・詐欺注意（日英併記・ピン留め）
@@ -402,6 +402,23 @@ async function showSearchResults(interaction, name) {
     components: [dealSelect(list, lc)],
   });
 }
+// 逆引き：相手の「ほしいもの(want)」をキーワード検索して、その出品者を表示
+async function showWantResults(interaction, kw) {
+  const lc = interaction.locale;
+  const list = kw ? db.searchByWant(kw, 10) : [];
+  if (!list.length) {
+    return interaction.update({
+      content: t(lc, 'want_no_match', { kw }),
+      embeds: [],
+      components: [],
+    });
+  }
+  return interaction.update({
+    content: t(lc, 'want_results', { kw, n: list.length }),
+    embeds: list.map((l) => resultEmbed(l, lc)),
+    components: [dealSelect(list, lc)],
+  });
+}
 // 人気ランキング（供給＝出品の多い物／需要＝探された多い物）
 async function replyRanking(interaction) {
   const lc = interaction.locale;
@@ -474,11 +491,23 @@ function searchRow(lc) {
       .setStyle(ButtonStyle.Secondary),
   );
 }
+// 逆引き：相手の「ほしいもの」で探すボタン（自分が持ってる物の出し先を見つける）
+function wantSearchRow(lc) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('mkt2_want_search')
+      .setLabel(t(lc, 'want_search'))
+      .setEmoji('💱')
+      .setStyle(ButtonStyle.Secondary),
+  );
+}
 function rarityView(lc, mode = 'sell') {
+  const components = [rarityRow(lc), searchRow(lc)];
+  if (mode === 'search') components.push(wantSearchRow(lc));
   return {
     content: mode === 'search' ? t(lc, 'search_pick_category') : t(lc, 'pick_category'),
     embeds: [],
-    components: [rarityRow(lc), searchRow(lc)],
+    components,
   };
 }
 // 選択メニュー用オプション。登録済みのカスタム絵文字があれば項目にアイコン画像を付ける
@@ -513,6 +542,21 @@ function searchResultView(names, lc) {
     embeds: [],
     components: [new ActionRowBuilder().addComponents(sel), backRarRow(lc)],
   };
+}
+function wantSearchModal(lc) {
+  return new ModalBuilder()
+    .setCustomId('mkt2_want_modal')
+    .setTitle(t(lc, 'want_modal_title'))
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('q')
+          .setLabel(t(lc, 'want_modal_label'))
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(50),
+      ),
+    );
 }
 function nameSearchModal(lc) {
   return new ModalBuilder()
@@ -793,6 +837,9 @@ async function handlePicker(interaction) {
       case 'mkt2_search_name':
         await interaction.showModal(nameSearchModal(lc));
         return true;
+      case 'mkt2_want_search':
+        await interaction.showModal(wantSearchModal(lc));
+        return true;
       case 'mkt2_wantmemo':
         await interaction.showModal(wantMemoModal(s, lc));
         return true;
@@ -830,6 +877,11 @@ async function handlePicker(interaction) {
       if (!s) return interaction.update(expiredView(lc));
       const names = catalog.suggestNames(interaction.fields.getTextInputValue('q'), 25);
       await interaction.update(searchResultView(names, lc));
+      return true;
+    }
+    if (interaction.customId === 'mkt2_want_modal') {
+      if (!s) return interaction.update(expiredView(lc));
+      await showWantResults(interaction, interaction.fields.getTextInputValue('q').trim());
       return true;
     }
     if (interaction.customId === 'mkt2_wantmemo_modal') {
@@ -971,6 +1023,37 @@ async function leaveRoom(interaction, listingId) {
 }
 
 // 同じ条件で再出品（不在で時間切れした出品者向け。元を失効させ新カードを最新に出す）
+// 再出品の中核（自動/手動 共用）：元を失効＋古いカード削除＋同条件で新カードをフィード最新に出す。
+async function doRelist(client, old) {
+  const feedId = db.getSetting('feed_channel_id');
+  const ch = feedId ? await client.channels.fetch(feedId).catch(() => null) : null;
+  if (!ch) return null;
+  db.setStatus(old.id, 'expired');
+  if (old.channel_id && old.message_id) {
+    const oc = await client.channels.fetch(old.channel_id).catch(() => null);
+    await oc?.messages?.delete(old.message_id).catch(() => {});
+  }
+  const newId = db.addListing({
+    sellerId: old.seller_id,
+    give: old.give_item,
+    giveName: old.give_name,
+    want: old.want_item,
+    note: old.note,
+    sellerTag: old.seller_tag,
+    sellerAvatar: old.seller_avatar,
+  });
+  db.setListingImages(newId, old.give_img, old.want_img);
+  if (old.give_name) db.recordItem(old.give_name);
+  const listing = db.getListing(newId);
+  const msg = await ch.send({
+    embeds: [listingEmbed(listing)],
+    components: [dealRow(newId)],
+    allowedMentions: NO_PING,
+  });
+  db.setListingMessage(newId, msg.channelId, msg.id);
+  return listing;
+}
+// 手動再出品（DMの🔁ボタン）
 async function relistListing(interaction, oldId) {
   const lc = interaction.locale;
   const old = db.getListing(oldId);
@@ -982,45 +1065,15 @@ async function relistListing(interaction, oldId) {
     await interaction.reply({ content: t(lc, 'relist_not_yours'), flags: MessageFlags.Ephemeral });
     return;
   }
-  const feedId = db.getSetting('feed_channel_id');
-  const ch = feedId ? await interaction.client.channels.fetch(feedId).catch(() => null) : null;
-  if (!ch) {
-    await interaction.reply({ content: t(lc, 'relist_fail'), flags: MessageFlags.Ephemeral });
-    return;
-  }
-  // 元を失効＋古いカード削除
-  db.setStatus(oldId, 'expired');
-  if (old.channel_id && old.message_id) {
-    const oc = await interaction.client.channels.fetch(old.channel_id).catch(() => null);
-    await oc?.messages?.delete(old.message_id).catch(() => {});
-  }
-  // 同条件で新規作成
-  const newId = db.addListing({
-    sellerId: old.seller_id,
-    give: old.give_item,
-    giveName: old.give_name,
-    want: old.want_item,
-    note: old.note,
-    sellerTag: interaction.user.tag,
-    sellerAvatar: interaction.user.displayAvatarURL(),
-  });
-  db.setListingImages(newId, old.give_img, old.want_img);
-  if (old.give_name) db.recordItem(old.give_name);
-  const listing = db.getListing(newId);
-  const msg = await ch.send({
-    embeds: [listingEmbed(listing, interaction.user.tag)],
-    components: [dealRow(newId)],
-    allowedMentions: NO_PING,
-  });
-  db.setListingMessage(newId, msg.channelId, msg.id);
+  const listing = await doRelist(interaction.client, old);
   await interaction.reply({
-    content: t(lc, 'relisted', { id: newId }),
+    content: listing ? t(lc, 'relisted', { id: listing.id }) : t(lc, 'relist_fail'),
     flags: MessageFlags.Ephemeral,
   });
 }
 
-// 閉鎖時に参加者へDM通知（スレッドは消えるので外から知らせる）
-async function notifyRoomClosed(client, thread, room) {
+// 閉鎖時：取引未完了なら自動再出品＋出品者へうるさいDM。買い手にも通知。
+async function notifyRoomClosed(client, room) {
   try {
     const listing = db.getListing(room.listing_id);
     const item = listing ? listing.give_item : '取引 / trade';
@@ -1029,20 +1082,28 @@ async function notifyRoomClosed(client, thread, room) {
     const ids = new Set(db.getRoomMembers(room.listing_id));
     if (sellerId) ids.add(sellerId);
     ids.delete(client.user.id);
+    // 取引完了してない（=active）なら自動再出品して最新に出す
+    let relisted = null;
+    if (listing && listing.status === 'active') {
+      relisted = await doRelist(client, listing).catch(() => null);
+    }
     const buyerMsg =
-      `⌛ 取引ルーム「**${item}**」は無反応のため自動で閉じたよ。タイミングが合わなかったかも。また「🔍探す」から試してね。\n` +
+      `⌛ 取引ルーム「**${item}**」は無反応で自動で閉じたよ。また「🔍探す」から試してね。\n` +
       `⌛ The trade room for “**${item}**” closed due to inactivity. Try again from “🔍 Find”.`;
-    const sellerMsg =
-      `⌛ あなたの出品「**${item}**」で取引ルームが立ったけど、**会話が無いまま時間切れ**で閉じたよ（相手とタイミングが合わなかったみたい）。\n` +
-      `🔁 下のボタンで**同じ条件のまま再出品**できる（出品リストの最新に出る）。\n` +
-      `⌛ A trade room for your listing “**${item}**” closed with no conversation. Tap below to **re-list with the same details**.`;
+    const sellerMsg = relisted
+      ? `🔔🔔 あなたの出品「**${item}**」で取引ルームが立ったけど、**不在で10分会話が無く時間切れ**…！\n` +
+        `🔁 **自動でもう一度出品しといたよ**（📋出品リストの最新に出てる）。「✅取引完了」を押すまで、誰か来るたび自動で繰り返すよ。\n` +
+        `🔔🔔 Room for “**${item}**” timed out (you were away). **Auto-re-listed** — it’ll keep re-listing until you press ✅ Done.`
+      : `⌛ あなたの出品「**${item}**」の取引ルームが時間切れで閉じたよ。\n⌛ Your trade room for “**${item}**” timed out.`;
     for (const id of ids) {
       const u = await client.users.fetch(id).catch(() => null);
       if (!u) continue;
-      if (sellerId && id === sellerId && listing) {
-        await u
-          .send({ content: sellerMsg, components: [relistRow(listing.id)] })
-          .catch(() => {});
+      if (sellerId && id === sellerId) {
+        if (relisted) await u.send(sellerMsg).catch(() => {});
+        else
+          await u
+            .send({ content: sellerMsg, components: listing ? [relistRow(listing.id)] : [] })
+            .catch(() => {});
       } else {
         await u.send(buyerMsg).catch(() => {});
       }
@@ -1074,16 +1135,17 @@ export function startRoomExpiryLoop(client) {
       const idle = now - lastActive;
       const age = now - r.created_at;
       if (idle >= ROOM_IDLE_TTL || age >= ROOM_HARD_MAX) {
-        await notifyRoomClosed(client, thread, r);
+        await notifyRoomClosed(client, r); // 取引未完了なら自動再出品＋うるさいDM
         await thread.delete().catch(() => {});
         db.deleteRoom(r.listing_id);
       } else if (idle >= ROOM_WARN && !r.warned) {
         const listing = db.getListing(r.listing_id);
         const ping = listing ? `<@${listing.seller_id}>` : '';
+        const closeAt = Math.floor((lastActive + ROOM_IDLE_TTL) / 1000); // Discordが自動カウントダウン表示
         await thread
           .send(
-            `⏰ 10分会話がないよ。**あと約5分で自動削除**！続けるならメッセージしてね。/ ` +
-              `No chat for 10 min — **auto-deletes in ~5 min**. Send a message to keep it open! ${ping}`,
+            `⏰🔔 **あと約5分で自動クローズ**（<t:${closeAt}:R>）！会話が無いと閉じるよ。続けるならメッセージしてね！ ${ping}\n` +
+              `Auto-closes <t:${closeAt}:R> if no chat — send a message to keep it open!`,
           )
           .catch(() => {});
         db.markRoomWarned(r.listing_id);
@@ -1108,7 +1170,29 @@ export function startRoomExpiryLoop(client) {
     } catch (e) {
       console.error('出品プルーニング失敗:', e);
     }
-  }, 5 * 60 * 1000);
+    // パネルを常に最下部に保つ（操作チャンネルで最後のメッセージがパネルでなければ貼り直す）
+    try {
+      const pch = db.getSetting('panel_channel_id');
+      const pmid = db.getSetting('panel_message_id');
+      if (pch) {
+        const channel = await client.channels.fetch(pch).catch(() => null);
+        if (channel) {
+          const last = await channel.messages.fetch({ limit: 1 }).catch(() => null);
+          const lastId = last && last.first() ? last.first().id : null;
+          if (lastId && lastId !== pmid) {
+            if (pmid) {
+              const old = await channel.messages.fetch(pmid).catch(() => null);
+              if (old) await old.delete().catch(() => {});
+            }
+            const msg = await channel.send(buildPanel());
+            db.setSetting('panel_message_id', msg.id);
+          }
+        }
+      }
+    } catch (e) {
+      console.error('パネル最下部維持失敗:', e);
+    }
+  }, 60 * 1000);
 }
 
 // 起動時：削除済みカスタム絵文字をDBから除去（選択メニューが壊れるのを防ぐ）
