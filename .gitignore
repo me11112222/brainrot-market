@@ -6,3 +6,6 @@ node_modules/
 *.db
 npm-debug.log*
 .DS_Store
+# 新キャラ追加の作業用に置く画像はコミットしない（.gitkeepだけ残す）
+new-characters/images/*
+!new-characters/images/.gitkeep
