@@ -245,6 +245,9 @@ async function startMatch(interaction, listing) {
     await interaction.editReply(t(lc, 'room_created', { thread }));
   } catch (err) {
     console.error('ルーム作成失敗:', err);
+    if (err?.rawError?.errors) {
+      console.error('ルーム作成 50035詳細:', JSON.stringify(err.rawError.errors));
+    }
     await interaction.editReply(t(lc, 'room_fail'));
   } finally {
     creatingRooms.delete(listing.id);

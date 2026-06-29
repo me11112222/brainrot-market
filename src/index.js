@@ -138,6 +138,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
     await handleMarketplaceInteraction(interaction);
   } catch (err) {
     console.error('インタラクション処理エラー:', err);
+    if (err?.rawError?.errors) {
+      console.error('50035詳細:', JSON.stringify(err.rawError.errors));
+    }
     if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
       interaction.reply({ content: '❌ エラーが発生したよ。', ephemeral: true }).catch(() => {});
     }
