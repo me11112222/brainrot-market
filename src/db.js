@@ -42,6 +42,17 @@ try {
 } catch {
   /* 既にある */
 }
+// 出品者の表示名＆アイコン（カードのフッターに出す）
+try {
+  db.exec(`ALTER TABLE listings ADD COLUMN seller_tag TEXT`);
+} catch {
+  /* 既にある */
+}
+try {
+  db.exec(`ALTER TABLE listings ADD COLUMN seller_avatar TEXT`);
+} catch {
+  /* 既にある */
+}
 
 // 大規模運用向けインデックス（検索・集計・自分の出品の高速化）
 db.exec(`
@@ -69,13 +80,22 @@ const SEED_ITEMS = [
   for (const s of SEED_ITEMS) seed.run(s);
 }
 
-export function addListing({ sellerId, give, giveName, want, note }) {
+export function addListing({ sellerId, give, giveName, want, note, sellerTag, sellerAvatar }) {
   const info = db
     .prepare(
-      `INSERT INTO listings (seller_id, give_item, give_name, want_item, note, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO listings (seller_id, give_item, give_name, want_item, note, seller_tag, seller_avatar, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(sellerId, give, giveName || null, want || null, note || null, Date.now());
+    .run(
+      sellerId,
+      give,
+      giveName || null,
+      want || null,
+      note || null,
+      sellerTag || null,
+      sellerAvatar || null,
+      Date.now(),
+    );
   return Number(info.lastInsertRowid);
 }
 

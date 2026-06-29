@@ -33,6 +33,11 @@ const SCAM_NOTICE =
   '・**クロストレード禁止（他ゲーム・現金・アカウント等との交換）/ NO cross-trading (other games, real money, accounts, etc.)**\n' +
   '・先払い要求・外部リンク・DM誘導は詐欺の可能性大 / Pay-first, external links or DM lures are likely SCAMS\n' +
   '⏰ 10分会話が無いと、5分後に自動で閉じます / Auto-closes 5 min after 10 min of silence';
+// 取引が進みやすくなるコツ（子供向けに絵文字で短く）
+const TRADE_TIPS =
+  '📸 **実物のスクショを見せ合うと早い！** / Show screenshots!\n' +
+  '🎯 **ほしいものをハッキリ伝えよう！** / Say exactly what you want!\n' +
+  '🤝 決まったら出品者が「✅取引完了」を押す / Seller taps ✅ Done when agreed';
 // 取引ルーム同時生成のレース防止（単一プロセス内ロック）
 const creatingRooms = new Set();
 // 荒らし対策のしきい値
@@ -68,7 +73,8 @@ function statsLine(name) {
   const m = catalog.metaOf(name);
   if (!m) return null;
   const parts = [];
-  if (m.attack != null) parts.push(`⚔️ ${m.attack}`);
+  // 戦闘力：base と ★5最大（実機の★5戦闘倍率=2.8）。濃縮の伸びしろが分かる。
+  if (m.attack != null) parts.push(`⚔️ ${m.attack}（★5→${Math.floor(m.attack * 2.8)}）`);
   if (m.rarity) parts.push(`💎 ${m.rarity}`);
   if (m.price) parts.push(`💰 ${m.price}`);
   if (m.production) parts.push(`🏭 ${m.production}`);
@@ -140,7 +146,10 @@ function listingEmbed(listing, sellerTag) {
   if (stats) e.addFields({ name: F_STATS, value: stats });
   if (listing.give_img) e.setImage(listing.give_img);
   if (listing.want_img) e.setThumbnail(listing.want_img);
-  e.setFooter({ text: `出品者 / Seller: ${sellerTag}` });
+  const tag = listing.seller_tag || sellerTag || '?';
+  const foot = { text: `出品者 / Seller: ${tag}` };
+  if (listing.seller_avatar) foot.iconURL = listing.seller_avatar;
+  e.setFooter(foot);
   return e;
 }
 function matchEmbed(listing) {
@@ -213,8 +222,14 @@ async function startMatch(interaction, listing) {
   if (listing.seller_id === user.id) {
     return interaction.reply({ content: t(lc, 'own_listing'), flags: MessageFlags.Ephemeral });
   }
-  let parent = interaction.channel;
-  if (parent?.isThread()) parent = parent.parent;
+  // 取引ルームは「出品リスト(フィード)」側に作る → 操作チャンネルにスレッドが立たず、パネルが流れない
+  let parent = null;
+  const feedId = db.getSetting('feed_channel_id');
+  if (feedId) parent = await interaction.client.channels.fetch(feedId).catch(() => null);
+  if (!parent) {
+    parent = interaction.channel;
+    if (parent?.isThread()) parent = parent.parent;
+  }
   if (!parent || parent.type !== ChannelType.GuildText) {
     return interaction.reply({ content: t(lc, 'cant_make_room'), flags: MessageFlags.Ephemeral });
   }
@@ -256,6 +271,7 @@ async function startMatch(interaction, listing) {
       embeds: [matchEmbed(listing)],
       allowedMentions: { users: [listing.seller_id, user.id] },
     });
+    await thread.send(TRADE_TIPS).catch(() => {});
     const notice = await thread.send(SCAM_NOTICE);
     await notice.pin().catch(() => {});
     const ctrl = await thread.send({
@@ -323,6 +339,9 @@ function resultEmbed(listing, lc) {
   const stats = statsLine(listing.give_name);
   if (stats) e.addFields({ name: F_STATS, value: stats });
   if (listing.give_img) e.setThumbnail(listing.give_img);
+  const foot = { text: `出品者 / Seller: ${listing.seller_tag || '?'}` };
+  if (listing.seller_avatar) foot.iconURL = listing.seller_avatar;
+  e.setFooter(foot);
   return e;
 }
 // 結果から取引相手を選ぶプルダウン（ボタン10個は不可なので選択メニューで）
@@ -689,6 +708,8 @@ async function finalizePicker(interaction, s) {
     giveName: s.candidate,
     want: cleanText(s.want || ''),
     note: cleanText(s.note || ''),
+    sellerTag: interaction.user.tag,
+    sellerAvatar: interaction.user.displayAvatarURL(),
   });
   db.setListingImages(listingId, giveImg, null);
   db.recordItem(s.candidate);
@@ -980,6 +1001,8 @@ async function relistListing(interaction, oldId) {
     giveName: old.give_name,
     want: old.want_item,
     note: old.note,
+    sellerTag: interaction.user.tag,
+    sellerAvatar: interaction.user.displayAvatarURL(),
   });
   db.setListingImages(newId, old.give_img, old.want_img);
   if (old.give_name) db.recordItem(old.give_name);
