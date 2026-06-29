@@ -164,8 +164,12 @@ const D = {
 
   // 運営
   panel_set: {
-    ja: '✅ パネル設置＆スティッキー有効化（常に最下部に出るよ）。',
-    en: '✅ Panel placed & sticky enabled (always stays at the bottom).',
+    ja: '✅ このチャンネルに操作パネルを設置したよ（出品はフィードへ流れる）。',
+    en: '✅ Control panel placed here (listings go to the feed channel).',
+  },
+  feed_set: {
+    ja: '✅ このチャンネルを「出品フィード」に設定したよ。今後の出品カードはここに流れる。',
+    en: '✅ This channel is now the listings feed. New listing cards will be posted here.',
   },
 };
 

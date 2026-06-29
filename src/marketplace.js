@@ -77,7 +77,12 @@ function statsLine(name) {
 export const marketplaceCommands = [
   new SlashCommandBuilder()
     .setName('パネル設置')
-    .setDescription('【運営用】交換マーケットのパネルを設置（スティッキー化）')
+    .setDescription('【運営用】このチャンネルに操作パネルを設置（出品/探す/マイ出品/ランキング）')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('フィード設置')
+    .setDescription('【運営用】出品カードをこのチャンネルに流す（出品フィード）')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .toJSON(),
 ];
@@ -670,13 +675,22 @@ async function finalizePicker(interaction, s) {
   db.setListingImages(listingId, giveImg, null);
   db.recordItem(s.candidate);
   const listing = db.getListing(listingId);
-  const msg = await interaction.channel.send({
+  // 出品カードはフィードチャンネルへ（未設定なら現在のチャンネル）。
+  // → 操作チャンネルは静かなまま＝出品/探すボタンが流れず常に押せる。
+  const feedId = db.getSetting('feed_channel_id');
+  let target = interaction.channel;
+  if (feedId && feedId !== interaction.channelId) {
+    const f = await interaction.client.channels.fetch(feedId).catch(() => null);
+    if (f) target = f;
+  }
+  const msg = await target.send({
     embeds: [listingEmbed(listing, interaction.user.tag)],
     components: [dealRow(listingId)],
     allowedMentions: NO_PING,
   });
   db.setListingMessage(listingId, msg.channelId, msg.id);
-  if (db.getSetting('panel_channel_id') === msg.channelId) {
+  // 旧・単一チャンネル運用の時だけパネルを貼り直す（フィード分離時は不要）
+  if (!feedId && db.getSetting('panel_channel_id') === msg.channelId) {
     scheduleRepostPanel(interaction.channel);
   }
   await interaction.update({
@@ -831,6 +845,14 @@ export async function handleMarketplaceInteraction(interaction) {
       db.setSetting('panel_message_id', msg.id);
       await interaction.reply({
         content: t(interaction.locale, 'panel_set'),
+        flags: MessageFlags.Ephemeral,
+      });
+      return true;
+    }
+    if (interaction.commandName === 'フィード設置') {
+      db.setSetting('feed_channel_id', interaction.channelId);
+      await interaction.reply({
+        content: t(interaction.locale, 'feed_set'),
         flags: MessageFlags.Ephemeral,
       });
       return true;
