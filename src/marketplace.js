@@ -1024,7 +1024,7 @@ async function leaveRoom(interaction, listingId) {
 
 // 同じ条件で再出品（不在で時間切れした出品者向け。元を失効させ新カードを最新に出す）
 // 再出品の中核（自動/手動 共用）：元を失効＋古いカード削除＋同条件で新カードをフィード最新に出す。
-async function doRelist(client, old) {
+async function doRelist(client, old, ping = false) {
   const feedId = db.getSetting('feed_channel_id');
   const ch = feedId ? await client.channels.fetch(feedId).catch(() => null) : null;
   if (!ch) return null;
@@ -1046,9 +1046,12 @@ async function doRelist(client, old) {
   if (old.give_name) db.recordItem(old.give_name);
   const listing = db.getListing(newId);
   const msg = await ch.send({
+    content: ping
+      ? `🔔 <@${old.seller_id}> 不在で時間切れ→自動で再出品したよ！「✅取引完了」を押すまで繰り返すよ / auto-re-listed (you were away)`
+      : undefined,
     embeds: [listingEmbed(listing)],
     components: [dealRow(newId)],
-    allowedMentions: NO_PING,
+    allowedMentions: ping ? { users: [old.seller_id] } : NO_PING,
   });
   db.setListingMessage(newId, msg.channelId, msg.id);
   return listing;
@@ -1085,7 +1088,7 @@ async function notifyRoomClosed(client, room) {
     // 取引完了してない（=active）なら自動再出品して最新に出す
     let relisted = null;
     if (listing && listing.status === 'active') {
-      relisted = await doRelist(client, listing).catch(() => null);
+      relisted = await doRelist(client, listing, true).catch(() => null);
     }
     const buyerMsg =
       `⌛ 取引ルーム「**${item}**」は無反応で自動で閉じたよ。また「🔍探す」から試してね。\n` +
