@@ -6,6 +6,11 @@ import { dirname, join } from 'node:path';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const db = new DatabaseSync(join(__dirname, '..', 'data.sqlite'));
 
+// 同時アクセス耐性：WAL（読み書き並行OK）＋ロック時は最大5秒待つ。
+// 絵文字アップロード等の別プロセスとbot本体が同じDBを触っても「database is locked」で落ちないように。
+db.exec('PRAGMA journal_mode = WAL');
+db.exec('PRAGMA busy_timeout = 5000');
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS listings (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
