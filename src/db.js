@@ -298,6 +298,12 @@ export function getRoomMembers(listingId) {
     .all(listingId)
     .map((r) => r.user_id);
 }
+export function removeRoomMember(listingId, userId) {
+  db.prepare(`DELETE FROM room_members WHERE listing_id=? AND user_id=?`).run(
+    listingId,
+    userId,
+  );
+}
 export function deleteRoom(listingId) {
   db.prepare(`DELETE FROM match_rooms WHERE listing_id=?`).run(listingId);
   db.prepare(`DELETE FROM room_members WHERE listing_id=?`).run(listingId);

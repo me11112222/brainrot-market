@@ -104,6 +104,23 @@ const D = {
     ja: '⏳ いま誰かが取引ルームを作成中…数秒待ってもう一度押してね。',
     en: '⏳ A room is being created right now… wait a few seconds and press again.',
   },
+  left_room: { ja: '👋 退出したよ。', en: '👋 You left the room.' },
+  seller_cant_leave: {
+    ja: '⚠️ 出品者は退出できないよ。終わったら「✅取引完了」を押してね。',
+    en: '⚠️ The seller can’t leave. Press “✅ Done” when finished.',
+  },
+  relisted: {
+    ja: '🔁 同じ条件で再出品したよ！（#{id}）出品リストの最新に出たよ。',
+    en: '🔁 Re-listed with the same details! (#{id}) It’s now at the top of the feed.',
+  },
+  relist_not_yours: {
+    ja: '⚠️ これはあなたの出品じゃないよ。',
+    en: '⚠️ This listing isn’t yours.',
+  },
+  relist_fail: {
+    ja: '⚠️ 再出品できなかった（元の出品が見つからない／フィード未設定）。',
+    en: '⚠️ Couldn’t re-list (original not found / feed not set).',
+  },
   listing_not_found: { ja: '⚠️ この出品は見つからなかった。', en: '⚠️ Listing not found.' },
   only_own: { ja: '⚠️ 自分の出品だけ操作できるよ。', en: '⚠️ You can only manage your own listing.' },
   deal_done: {
