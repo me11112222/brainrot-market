@@ -56,6 +56,16 @@ const client = new Client({
   },
 });
 
+// サーバーロック：メインサーバー以外には居座らせない
+// （RMT業者などが MEGA MECHSPOT を自分のサーバーに招待しても即退出させる）
+const ALLOWED_GUILD = GUILD_ID; // 本番は固定。空（開発時）なら制限しない
+async function enforceGuildLock(guild) {
+  if (!ALLOWED_GUILD || guild.id === ALLOWED_GUILD) return false;
+  console.log(`🔒 許可外サーバーから退出: ${guild.name} (${guild.id})`);
+  await guild.leave().catch((e) => console.error('退出失敗:', e));
+  return true;
+}
+
 client.once(Events.ClientReady, async (c) => {
   console.log(`✅ ログイン成功: ${c.user.tag}`);
 
@@ -63,6 +73,11 @@ client.once(Events.ClientReady, async (c) => {
   console.log('📋 参加中のサーバー:');
   for (const g of c.guilds.cache.values()) {
     console.log(`   - ${g.name}  (ID: ${g.id})`);
+  }
+
+  // サーバーロック：許可外サーバーから退出
+  if (ALLOWED_GUILD) {
+    for (const g of [...c.guilds.cache.values()]) await enforceGuildLock(g);
   }
 
   // ギルドコマンドを即時登録（反映が速い）。
@@ -101,8 +116,17 @@ client.once(Events.ClientReady, async (c) => {
   console.log('🛒 マーケットプレイス機能 起動');
 });
 
+// 招待されても許可外サーバーなら即退出
+client.on(Events.GuildCreate, (guild) => {
+  enforceGuildLock(guild);
+});
+
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
+    // サーバーロック：許可外サーバーからの操作は無視（保険）
+    if (ALLOWED_GUILD && interaction.guildId && interaction.guildId !== ALLOWED_GUILD) {
+      return;
+    }
     // /ping（基盤確認）
     if (interaction.isChatInputCommand() && interaction.commandName === 'ping') {
       await interaction.reply(
