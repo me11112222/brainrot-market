@@ -1,0 +1,9 @@
+[Unit]
+Description=BrainrotBot Marketplace DB backup (daily, 7-day rotation)
+
+[Service]
+Type=oneshot
+# クローンした場所に合わせて変更（例: /home/USER/brainrot-market）
+WorkingDirectory=/home/USER/brainrot-market
+# 出力先は $HOME/backups（第2引数で変更可）
+ExecStart=/usr/bin/node scripts/backup-db.js

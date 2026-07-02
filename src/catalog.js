@@ -6,13 +6,6 @@ const CDN = 'https://cdn.jsdelivr.net/gh/me11112222/brainrot-images@main/';
 const PATH =
   process.env.CATALOG_PATH || 'C:/AI/projects/event-tool/discord-bot/characters.json';
 
-let chars = [];
-try {
-  chars = JSON.parse(readFileSync(PATH, 'utf8'));
-} catch (e) {
-  console.warn('📚 catalog読込失敗:', e.message);
-}
-
 // レア度をユーザー指定どおりに統合
 const GROUPS = [
   { label: 'Common〜Mythic', rarities: ['Common', 'Rare', 'Epic', 'Legendary', 'Mythic'] },
@@ -22,30 +15,57 @@ const GROUPS = [
   { label: 'UNKNOWN', rarities: ['Unknown'] },
 ];
 
+let chars = [];
 const byCategory = new Map();
 const imageByName = new Map();
 const skinsByName = new Map();
 const attackByName = new Map();
 const metaByName = new Map();
-const allNames = [];
-for (const c of chars) {
-  if (!c?.name) continue;
-  if (c.rarity === 'Missing') continue; // Missingはトレード不可＝非表示
-  const g = GROUPS.find((x) => x.rarities.includes(c.rarity));
-  if (!g) continue; // どのカテゴリにも属さないものは出さない
-  allNames.push(c.name);
-  if (c.image) imageByName.set(c.name, c.image);
-  if (c.skins) skinsByName.set(c.name, c.skins);
-  const atk = Number(c.attack);
-  if (Number.isFinite(atk)) attackByName.set(c.name, atk);
-  metaByName.set(c.name, {
-    attack: Number.isFinite(atk) ? atk : null,
-    rarity: c.rarity || null,
-    price: c.price || null,
-    production: c.production || null,
-  });
-  if (!byCategory.has(g.label)) byCategory.set(g.label, []);
-  byCategory.get(g.label).push(c.name);
+let allNames = [];
+
+// 図鑑JSONを読み込んで索引を組み立てる。再読込にも使う（失敗時は旧データ維持で0を返す）
+function load() {
+  let next;
+  try {
+    next = JSON.parse(readFileSync(PATH, 'utf8'));
+  } catch (e) {
+    console.warn('📚 catalog読込失敗:', e.message);
+    return 0;
+  }
+  if (!Array.isArray(next)) return 0;
+  chars = next;
+  byCategory.clear();
+  imageByName.clear();
+  skinsByName.clear();
+  attackByName.clear();
+  metaByName.clear();
+  allNames = [];
+  for (const c of chars) {
+    if (!c?.name) continue;
+    if (c.rarity === 'Missing') continue; // Missingはトレード不可＝非表示
+    const g = GROUPS.find((x) => x.rarities.includes(c.rarity));
+    if (!g) continue; // どのカテゴリにも属さないものは出さない
+    allNames.push(c.name);
+    if (c.image) imageByName.set(c.name, c.image);
+    if (c.skins) skinsByName.set(c.name, c.skins);
+    const atk = Number(c.attack);
+    if (Number.isFinite(atk)) attackByName.set(c.name, atk);
+    metaByName.set(c.name, {
+      attack: Number.isFinite(atk) ? atk : null,
+      rarity: c.rarity || null,
+      price: c.price || null,
+      production: c.production || null,
+    });
+    if (!byCategory.has(g.label)) byCategory.set(g.label, []);
+    byCategory.get(g.label).push(c.name);
+  }
+  return allNames.length;
+}
+load();
+
+// 図鑑のホットリロード（/図鑑リロード用。再起動なしで新キャラ反映）
+export function reload() {
+  return load();
 }
 
 export function loaded() {

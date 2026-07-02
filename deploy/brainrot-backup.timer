@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily backup of BrainrotBot Marketplace DB
+
+[Timer]
+# 毎日 19:30 UTC = 日本時間 04:30（利用が少ない時間帯）
+OnCalendar=*-*-* 19:30:00
+# VMが停止していて実行を逃したら、次回起動時に実行
+Persistent=true
+
+[Install]
+WantedBy=timers.target

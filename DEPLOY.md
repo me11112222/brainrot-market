@@ -83,6 +83,25 @@ DOTENV_CONFIG_PATH=./.env node scripts/upload-emojis.js 1456356183613898803
 ## 9. パネル設置 & 運用
 - 募集チャンネルで `/パネル設置`（運営のみ可）→ スティッキーで最下部常駐。
 - 旧フォーラム（交換募集/ボス戦募集）は段階的に読み取り専用→アーカイブへ。
+- 任意: `/週報設置`（週刊ニュースを流すチャンネルで実行）／`/実績ロール設定`（取引◯回で自動ロール）。
+- 新キャラ追加後は `/図鑑リロード` で再起動なしに反映できる（絵文字は別途 `upload-app-emojis.js`）。
+
+## 10. DBバックアップ（必須・日次）
+`data.sqlite` を毎日 04:30 JST に `~/backups/data-<曜日>.sqlite` へスナップショット（7世代ローテ）。
+`VACUUM INTO` 方式なのでbot稼働中に実行しても安全。
+
+```bash
+cd ~/brainrot-market
+sudo cp deploy/brainrot-backup.service deploy/brainrot-backup.timer /etc/systemd/system/
+sudo nano /etc/systemd/system/brainrot-backup.service   # WorkingDirectory の USER を実ユーザー名に
+sudo systemctl daemon-reload
+sudo systemctl enable --now brainrot-backup.timer
+# 動作確認（手動で1回実行）
+sudo systemctl start brainrot-backup.service && ls -la ~/backups/
+systemctl list-timers | grep brainrot   # 次回実行時刻の確認
+```
+復旧手順: `sudo systemctl stop brainrot-market && cp ~/backups/data-<曜日>.sqlite ~/brainrot-market/data.sqlite && sudo systemctl start brainrot-market`
+※理想はさらに `rclone` 等でVM外（Google Drive/GCS）へ週1コピー。
 
 ## メモリ（e2-micro 1GB）
 - Python版 + Node版 の2本。Node側はメンバー非キャッシュ＋sweeper済みで軽量。

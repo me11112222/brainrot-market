@@ -26,6 +26,11 @@ const ROOM_WARN = 5 * 60 * 1000; // 5分無反応で「あと約5分で削除」
 const ROOM_IDLE_TTL = 10 * 60 * 1000; // 10分無反応で削除（＋自動再出品）
 const ROOM_HARD_MAX = 24 * 60 * 60 * 1000; // 活動があっても24hで強制終了（保険）
 const LISTING_TTL = 7 * 24 * 60 * 60 * 1000; // 出品は7日で自動失効
+const WEEK = 7 * 24 * 60 * 60 * 1000;
+const WATCH_MAX = 5; // 📌ウォッチは1人5件まで
+const WATCH_TTL = 14 * 24 * 60 * 60 * 1000; // 放置ウォッチは14日で自動解除
+const MATCH_DEDUP_TTL = 6 * 60 * 60 * 1000; // 同じ2人への💞マッチ通知は6hに1回まで
+const HOT_DEMAND_MIN = 3; // 🔥バッジ：直近7日の需要がこれ以上 かつ 供給の2倍以上
 // 取引ルームの常設・詐欺注意（日英併記・ピン留め）
 const SCAM_NOTICE =
   '⚠️ **取引は自己責任で / Trade at your OWN RISK**\n' +
@@ -92,6 +97,27 @@ export const marketplaceCommands = [
     .setDescription('【運営用】出品カードをこのチャンネルに流す（出品フィード）')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .toJSON(),
+  new SlashCommandBuilder()
+    .setName('図鑑リロード')
+    .setDescription('【運営用】図鑑(characters.json)を再読込（bot再起動なしで新キャラ反映）')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('週報設置')
+    .setDescription('【運営用】週刊マーケットニュースをこのチャンネルに自動投稿（週1回）')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('実績ロール設定')
+    .setDescription('【運営用】取引成立◯回で自動付与するロールを設定')
+    .addRoleOption((o) =>
+      o.setName('ロール').setDescription('付与するロール（Botのロールより下に置く）').setRequired(true),
+    )
+    .addIntegerOption((o) =>
+      o.setName('回数').setDescription('必要な取引成立回数').setMinValue(1).setRequired(true),
+    )
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .toJSON(),
 ];
 
 // ===== パネル（共有・日英併記）=====
@@ -135,10 +161,33 @@ export function buildPanel() {
 }
 
 // ===== 掲示・取引（共有・日英併記）=====
+// 🔥需要バッジ：直近7日でよく探されてる割に出品が少ないアイテムに付ける（出品促進）
+function hotSuffix(name) {
+  if (!name) return '';
+  try {
+    const demand = db.demandCount(name, WEEK);
+    if (demand >= HOT_DEMAND_MIN && demand >= db.countActiveByName(name) * 2) {
+      return ' 🔥人気/HOT';
+    }
+  } catch {
+    /* バッジは飾りなので失敗しても出品は止めない */
+  }
+  return '';
+}
+// 出品者フッター（✅取引実績つき＝信頼の可視化・詐欺抑止）
+function sellerFooter(listing, sellerTag) {
+  const tag = listing.seller_tag || sellerTag || '?';
+  const n = listing.seller_id ? db.tradesOf(listing.seller_id) : 0;
+  const foot = {
+    text: `出品者 / Seller: ${tag}${n > 0 ? `　✅取引実績 ${n}回 / ${n} trade(s)` : ''}`,
+  };
+  if (listing.seller_avatar) foot.iconURL = listing.seller_avatar;
+  return foot;
+}
 function listingEmbed(listing, sellerTag) {
   const e = new EmbedBuilder()
     .setColor(COLOR)
-    .setAuthor({ name: `出品 / Listing #${listing.id}` })
+    .setAuthor({ name: `出品 / Listing #${listing.id}${hotSuffix(listing.give_name)}` })
     .addFields({ name: F_GIVE, value: listing.give_item });
   if (listing.want_item) e.addFields({ name: F_WANT, value: listing.want_item });
   if (listing.note) e.addFields({ name: F_NOTE, value: listing.note });
@@ -146,10 +195,7 @@ function listingEmbed(listing, sellerTag) {
   if (stats) e.addFields({ name: F_STATS, value: stats });
   if (listing.give_img) e.setImage(listing.give_img);
   if (listing.want_img) e.setThumbnail(listing.want_img);
-  const tag = listing.seller_tag || sellerTag || '?';
-  const foot = { text: `出品者 / Seller: ${tag}` };
-  if (listing.seller_avatar) foot.iconURL = listing.seller_avatar;
-  e.setFooter(foot);
+  e.setFooter(sellerFooter(listing, sellerTag));
   return e;
 }
 function matchEmbed(listing) {
@@ -321,6 +367,108 @@ async function closeListing(interaction, listingId, byDone) {
   }
 }
 
+// ===== 取引完了（両者✅方式）=====
+// 出品者＋相手の両方が✅を押して初めて成立 → trades に実績記録。
+// 片方の一存で「完了」にならないので、実績の水増し・渡す前クローズ事故を防ぐ。
+async function handleDone(interaction, listingId) {
+  const lc = interaction.locale;
+  const listing = db.getListing(listingId);
+  if (!listing) {
+    return interaction.reply({ content: t(lc, 'listing_not_found'), flags: MessageFlags.Ephemeral });
+  }
+  if (listing.status !== 'active') {
+    return interaction.reply({ content: t(lc, 'listing_ended'), flags: MessageFlags.Ephemeral });
+  }
+  const room = db.getRoom(listingId);
+  if (!room) {
+    // ルーム記録なし（古いメッセージ等）→ 従来どおり出品者のみ即クローズ（実績記録なし）
+    return closeListing(interaction, listingId, true);
+  }
+  db.touchRoom(room.thread_id); // ✅操作も活動扱い＝確認待ちの間に無反応クローズさせない
+  const uid = interaction.user.id;
+  if (uid === listing.seller_id) {
+    if (room.done_buyer_id) return finalizeTrade(interaction, listing, room.done_buyer_id);
+    if (room.done_seller) {
+      return interaction.reply({ content: t(lc, 'done_already'), flags: MessageFlags.Ephemeral });
+    }
+    db.setRoomDoneSeller(listingId);
+    await interaction.reply({ content: t(lc, 'done_wait_partner'), flags: MessageFlags.Ephemeral });
+    await interaction.channel
+      ?.send({
+        content:
+          '✅ 出品者が「取引完了」を押したよ！**相手も✅を押すと成立**するよ👇\n' +
+          '✅ Seller pressed Done! **Partner: press ✅ too to complete the trade** 👇',
+      })
+      .catch(() => {});
+  } else {
+    if (room.done_seller) return finalizeTrade(interaction, listing, uid);
+    if (room.done_buyer_id === uid) {
+      return interaction.reply({ content: t(lc, 'done_already'), flags: MessageFlags.Ephemeral });
+    }
+    db.setRoomDoneBuyer(listingId, uid);
+    await interaction.reply({ content: t(lc, 'done_wait_partner'), flags: MessageFlags.Ephemeral });
+    await interaction.channel
+      ?.send({
+        content:
+          `✅ <@${uid}> が「取引完了」を押したよ！**出品者 <@${listing.seller_id}> も✅を押すと成立**！\n` +
+          '✅ Partner pressed Done! **Seller: press ✅ too to complete the trade!**',
+        allowedMentions: { users: [listing.seller_id] },
+      })
+      .catch(() => {});
+  }
+}
+
+// 成立処理：実績記録 → 出品クローズ＆カード削除 → 🎉アナウンス → 実績ロール → ルーム片付け
+async function finalizeTrade(interaction, listing, buyerId) {
+  const lc = interaction.locale;
+  db.addTrade({
+    listingId: listing.id,
+    sellerId: listing.seller_id,
+    buyerId,
+    give: listing.give_item,
+    giveName: listing.give_name,
+    want: listing.want_item,
+  });
+  db.setStatus(listing.id, 'closed');
+  if (listing.channel_id && listing.message_id) {
+    const ch = await interaction.client.channels.fetch(listing.channel_id).catch(() => null);
+    await ch?.messages?.delete(listing.message_id).catch(() => {});
+  }
+  await interaction.reply({ content: t(lc, 'deal_done'), flags: MessageFlags.Ephemeral });
+  await interaction.channel
+    ?.send(
+      `🎉 **取引成立！ / Trade complete!** <@${listing.seller_id}> ✕ <@${buyerId}>\n` +
+        '✅ 実績に記録したよ / Recorded to your trade stats',
+    )
+    .catch(() => {});
+  await grantTraderRole(interaction.guild, listing.seller_id);
+  await grantTraderRole(interaction.guild, buyerId);
+  const room = db.getRoom(listing.id);
+  if (room) {
+    db.deleteRoom(listing.id);
+    const thread = await interaction.client.channels.fetch(room.thread_id).catch(() => null);
+    if (thread) setTimeout(() => thread.delete().catch(() => {}), 5000);
+  }
+}
+
+// 実績ロール：/実績ロール設定 で決めた回数に達したら自動付与（未設定なら何もしない）
+async function grantTraderRole(guild, userId) {
+  try {
+    const roleId = db.getSetting('trader_role_id');
+    const min = Number(db.getSetting('trader_role_min') || 0);
+    if (!guild || !roleId || !min) return;
+    if (db.tradesOf(userId) < min) return;
+    const member = await guild.members.fetch(userId).catch(() => null);
+    if (member && !member.roles.cache.has(roleId)) {
+      await member.roles.add(roleId, `取引実績${min}回達成 / trade milestone`).catch((e) => {
+        console.error('実績ロール付与失敗（Botロールの位置/権限を確認）:', e.message);
+      });
+    }
+  } catch (e) {
+    console.error('実績ロール処理失敗:', e);
+  }
+}
+
 // ===== さがす（ピッカー型検索）=====
 // アイテムのカスタム絵文字を埋め込みテキストで使うためのメンション文字列
 function emojiMention(name) {
@@ -332,16 +480,14 @@ function emojiMention(name) {
 function resultEmbed(listing, lc) {
   const e = new EmbedBuilder()
     .setColor(COLOR)
-    .setAuthor({ name: `出品 / Listing #${listing.id}` })
+    .setAuthor({ name: `出品 / Listing #${listing.id}${hotSuffix(listing.give_name)}` })
     .addFields({ name: F_GIVE, value: listing.give_item });
   if (listing.want_item) e.addFields({ name: F_WANT, value: listing.want_item });
   if (listing.note) e.addFields({ name: F_NOTE, value: listing.note });
   const stats = statsLine(listing.give_name);
   if (stats) e.addFields({ name: F_STATS, value: stats });
   if (listing.give_img) e.setThumbnail(listing.give_img);
-  const foot = { text: `出品者 / Seller: ${listing.seller_tag || '?'}` };
-  if (listing.seller_avatar) foot.iconURL = listing.seller_avatar;
-  e.setFooter(foot);
+  e.setFooter(sellerFooter(listing));
   return e;
 }
 // 結果から取引相手を選ぶプルダウン（ボタン10個は不可なので選択メニューで）
@@ -360,9 +506,21 @@ function dealSelect(listings, lc) {
   return new ActionRowBuilder().addComponents(sel);
 }
 // 探すで選ばれたアイテムの出品を表示。ぴったり無ければ「戦闘力が近い出品」を最大10件。
+// 📌 出品されたら通知（検索空振り→通知予約に変換する）
+function watchRow(lc) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('mkt2_watch')
+      .setLabel(t(lc, 'watch_button'))
+      .setEmoji('📌')
+      .setStyle(ButtonStyle.Primary),
+  );
+}
 async function showSearchResults(interaction, name) {
   const lc = interaction.locale;
   db.recordWant(name, interaction.user.id); // 需要として記録（ユーザー単位ユニーク）
+  const session = pickerSessions.get(interaction.user.id);
+  if (session) session.lastSearch = name; // 📌ウォッチ登録用に検索対象を覚えておく
   let list = db.searchListings(name, 10);
   let header = list.length ? t(lc, 'search_results_for', { item: name, n: list.length }) : null;
   if (!list.length) {
@@ -393,7 +551,7 @@ async function showSearchResults(interaction, name) {
     return interaction.update({
       content: t(lc, 'search_empty', { item: name }),
       embeds: [],
-      components: [],
+      components: [watchRow(lc)],
     });
   }
   return interaction.update({
@@ -419,11 +577,11 @@ async function showWantResults(interaction, kw) {
     components: [dealSelect(list, lc)],
   });
 }
-// 人気ランキング（供給＝出品の多い物／需要＝探された多い物）
+// 人気ランキング（供給＝出品の多い物／需要＝直近7日で探された多い物＝鮮度重視）
 async function replyRanking(interaction) {
   const lc = interaction.locale;
   const sup = db.topSupply(10);
-  const dem = db.topWants(10);
+  const dem = db.topWants(10, WEEK);
   const fmt = (rows) =>
     rows.length
       ? rows
@@ -440,6 +598,33 @@ async function replyRanking(interaction) {
     .setFooter({ text: t(lc, 'rank_hint') });
   await interaction.reply({ embeds: [e], flags: MessageFlags.Ephemeral });
 }
+// 週刊マーケットニュース（共有・日英併記）。/週報設置 したチャンネルに週1で自動投稿
+function buildNewsPayload() {
+  const sup = db.topSupply(5);
+  const dem = db.topWants(5, WEEK);
+  const trades = db.tradesSince(WEEK);
+  const newListings = db.countListingsSince(WEEK);
+  const fmt = (rows) =>
+    rows.length
+      ? rows.map((r, i) => `**${i + 1}.** ${emojiMention(r.name)} ${r.name} ×${r.c}`).join('\n')
+      : '（データなし / no data）';
+  const e = new EmbedBuilder()
+    .setColor(COLOR)
+    .setTitle('📰 週刊マーケットニュース / Weekly Market News')
+    .setDescription(
+      `今週の新規出品 **${newListings}** 件・成立した取引 **${trades}** 件\n` +
+        `This week: **${newListings}** new listings, **${trades}** completed trades`,
+    )
+    .addFields(
+      { name: '⬆️ よく出品されてる / Most listed', value: fmt(sup), inline: true },
+      { name: '🔥 よく探されてる / Most wanted (7d)', value: fmt(dem), inline: true },
+    )
+    .setFooter({
+      text: '🛒マーケットパネルの「出品/探す」から参加してね！ / Join from the market panel!',
+    });
+  return { embeds: [e] };
+}
+
 // 自分の出品一覧＋🗑️取り下げボタンのペイロード（マイ出品・上限到達時に共用）
 function myListingsPayload(userId, tag, lc, header) {
   const mine = db.listByUser(userId);
@@ -766,11 +951,20 @@ async function finalizePicker(interaction, s) {
     const f = await interaction.client.channels.fetch(feedId).catch(() => null);
     if (f) target = f;
   }
-  const msg = await target.send({
-    embeds: [listingEmbed(listing, interaction.user.tag)],
-    components: [dealRow(listingId)],
-    allowedMentions: NO_PING,
-  });
+  let msg;
+  try {
+    msg = await target.send({
+      embeds: [listingEmbed(listing, interaction.user.tag)],
+      components: [dealRow(listingId)],
+      allowedMentions: NO_PING,
+    });
+  } catch (err) {
+    // カードが出せなかった出品はDBに残さない（見えない孤児出品の防止）
+    console.error('出品カード送信失敗:', err);
+    db.setStatus(listingId, 'closed');
+    await interaction.update({ content: t(lc, 'post_fail'), embeds: [], components: [] });
+    return;
+  }
   db.setListingMessage(listingId, msg.channelId, msg.id);
   // 旧・単一チャンネル運用の時だけパネルを貼り直す（フィード分離時は不要）
   if (!feedId && db.getSetting('panel_channel_id') === msg.channelId) {
@@ -781,6 +975,81 @@ async function finalizePicker(interaction, s) {
     embeds: [],
     components: [],
   });
+  // 応答を返した後で📌ウォッチ通知＆💞自動マッチング（重くても操作をブロックしない）
+  afterListingPosted(interaction.client, db.getListing(listingId)).catch((e) =>
+    console.error('出品後通知失敗:', e),
+  );
+}
+
+// ===== 出品後フック：📌ウォッチ通知 ＆ 💞自動マッチング =====
+// どちらも「探す手間をゼロにする」仕掛け。通知はDMではなくフィードへ（DM拒否勢にも届く）
+const notifiedPairs = new Map(); // `sellerA:sellerB`（ソート済）→ 最終通知時刻
+async function afterListingPosted(client, listing) {
+  if (!listing || listing.status !== 'active') return;
+  const feedId = db.getSetting('feed_channel_id');
+  const ch = feedId ? await client.channels.fetch(feedId).catch(() => null) : null;
+  if (!ch) return;
+  // 📌 ウォッチャーに入荷通知（1回きり＝通知後に登録解除）
+  if (listing.give_name) {
+    const watchers = db
+      .takeWatchers(listing.give_name)
+      .filter((id) => id !== listing.seller_id)
+      .slice(0, 15);
+    if (watchers.length) {
+      await ch
+        .send({
+          content:
+            `📌 **入荷通知 / Watch alert!** ${watchers.map((id) => `<@${id}>`).join(' ')}\n` +
+            `ウォッチ中の「**${listing.give_item}**」が出品されたよ！👇ボタンで取引ルームへ\n` +
+            `Your watched item was just listed! Tap the button to trade 👇`,
+          components: [dealRow(listing.id)],
+          allowedMentions: { users: watchers },
+        })
+        .catch(() => {});
+    }
+  }
+  // 💞 自動マッチング：相互に条件が噛み合う出品を探して両者に提案
+  const cand = findBestMatch(listing);
+  if (cand) {
+    const key = [listing.seller_id, cand.seller_id].sort().join(':');
+    const now = Date.now();
+    const last = notifiedPairs.get(key);
+    if (!last || now - last > MATCH_DEDUP_TTL) {
+      notifiedPairs.set(key, now);
+      await ch
+        .send({
+          content:
+            `💞 **交換マッチの予感！ / Possible match!**\n` +
+            `<@${listing.seller_id}>「**${listing.give_item}**」(#${listing.id}) ⇄ ` +
+            `<@${cand.seller_id}>「**${cand.give_item}**」(#${cand.id})\n` +
+            `👇 **相手側**のボタンを押すと取引ルームができるよ / Tap the **other side’s** button to open a room`,
+          components: [matchPairRow(listing, cand)],
+          allowedMentions: { users: [listing.seller_id, cand.seller_id] },
+        })
+        .catch(() => {});
+    }
+  }
+}
+// 相互マッチ（両者のwantが噛み合う）を最優先、無ければ片方向（相手が自分の品を求めてる等）
+function findBestMatch(listing) {
+  if (!listing.give_name) return null;
+  const wantMine = db.listingsWanting(listing.give_name, listing.seller_id, 25);
+  const myWant = (listing.want_item || '').trim();
+  const offerWanted = myWant ? db.listingsOffering(myWant, listing.seller_id, 25) : [];
+  const offerIds = new Set(offerWanted.map((l) => l.id));
+  return wantMine.find((l) => offerIds.has(l.id)) || wantMine[0] || offerWanted[0] || null;
+}
+function matchPairRow(a, b) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`mkt_deal_${a.id}`)
+      .setLabel(`🤝 #${a.id} ${a.give_name || ''}`.slice(0, 80))
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(`mkt_deal_${b.id}`)
+      .setLabel(`🤝 #${b.id} ${b.give_name || ''}`.slice(0, 80))
+      .setStyle(ButtonStyle.Success),
+  );
 }
 
 async function handlePicker(interaction) {
@@ -843,6 +1112,23 @@ async function handlePicker(interaction) {
       case 'mkt2_wantmemo':
         await interaction.showModal(wantMemoModal(s, lc));
         return true;
+      case 'mkt2_watch': {
+        // 📌 出品されたら通知（直前に空振りした検索対象を登録）
+        const name = s.lastSearch;
+        if (!name) {
+          await interaction.update(expiredView(lc));
+          return true;
+        }
+        const r = db.addWatch(interaction.user.id, name, WATCH_MAX);
+        await interaction.reply({
+          content:
+            r === 'limit'
+              ? t(lc, 'watch_limit', { n: WATCH_MAX })
+              : t(lc, 'watch_saved', { item: name, n: WATCH_MAX }),
+          flags: MessageFlags.Ephemeral,
+        });
+        return true;
+      }
       case 'mkt2_post': {
         if (!s.candidate) {
           await interaction.reply({ content: t(lc, 'need_give'), flags: MessageFlags.Ephemeral });
@@ -948,6 +1234,42 @@ export async function handleMarketplaceInteraction(interaction) {
       });
       return true;
     }
+    if (interaction.commandName === '図鑑リロード') {
+      const n = catalog.reload();
+      if (n > 0) db.importItemNames(catalog.allItemNames());
+      await interaction.reply({
+        content:
+          n > 0
+            ? `✅ 図鑑を再読込したよ（${n}体）。新キャラの絵文字が未登録なら \`upload-app-emojis.js\` も実行してね。`
+            : '❌ 図鑑の再読込に失敗（CATALOG_PATH と characters.json を確認してね）。旧データのまま動いてるよ。',
+        flags: MessageFlags.Ephemeral,
+      });
+      return true;
+    }
+    if (interaction.commandName === '週報設置') {
+      db.setSetting('news_channel_id', interaction.channelId);
+      db.setSetting('last_weekly_news', String(Date.now()));
+      await interaction.channel.send(buildNewsPayload()).catch(() => {});
+      await interaction.reply({
+        content: '✅ 週刊マーケットニュースをこのチャンネルに週1回自動投稿するよ（↑いまのがサンプル）。',
+        flags: MessageFlags.Ephemeral,
+      });
+      return true;
+    }
+    if (interaction.commandName === '実績ロール設定') {
+      const role = interaction.options.getRole('ロール');
+      const min = interaction.options.getInteger('回数');
+      db.setSetting('trader_role_id', role.id);
+      db.setSetting('trader_role_min', String(min));
+      await interaction.reply({
+        content:
+          `✅ 取引成立 **${min}回** で ${role} を自動付与するよ。\n` +
+          '⚠️ Botのロールがこのロールより**上**にあること＆「ロールの管理」権限が必要だよ。',
+        flags: MessageFlags.Ephemeral,
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
     return false;
   }
 
@@ -982,7 +1304,7 @@ export async function handleMarketplaceInteraction(interaction) {
       return true;
     }
     if (id.startsWith('mkt_done_')) {
-      await closeListing(interaction, Number(id.slice('mkt_done_'.length)), true);
+      await handleDone(interaction, Number(id.slice('mkt_done_'.length)));
       return true;
     }
     if (id.startsWith('mkt_close_')) {
@@ -1054,6 +1376,10 @@ async function doRelist(client, old, ping = false) {
     allowedMentions: ping ? { users: [old.seller_id] } : NO_PING,
   });
   db.setListingMessage(newId, msg.channelId, msg.id);
+  // 再出品でも📌ウォッチ通知＆💞マッチングを回す（ペア6hデデュープでスパムは防ぐ）
+  afterListingPosted(client, db.getListing(newId)).catch((e) =>
+    console.error('再出品後通知失敗:', e),
+  );
   return listing;
 }
 // 手動再出品（DMの🔁ボタン）
@@ -1124,9 +1450,22 @@ function pruneMemory(now) {
   cleanupBuckets();
 }
 
-// ===== 取引ルームの「無反応1時間」自動クローズ＋通知 =====
+// ===== 取引ルームの「無反応」自動クローズ＋定期メンテ =====
+let sweepRunning = false; // 多重実行ガード：前回の掃除が長引いても重ねて走らせない（DM二重送信等の防止）
 export function startRoomExpiryLoop(client) {
   setInterval(async () => {
+    if (sweepRunning) return;
+    sweepRunning = true;
+    try {
+      await sweepOnce(client);
+    } catch (e) {
+      console.error('定期メンテ失敗:', e);
+    } finally {
+      sweepRunning = false;
+    }
+  }, 60 * 1000);
+}
+async function sweepOnce(client) {
     const now = Date.now();
     for (const r of db.allRooms()) {
       const thread = await client.channels.fetch(r.thread_id).catch(() => null);
@@ -1166,12 +1505,32 @@ export function startRoomExpiryLoop(client) {
     } catch (e) {
       console.error('出品失効失敗:', e);
     }
-    // 掃除：メモリ＋古い行（7日より前の closed/expired をDBから物理削除）
+    // 掃除：メモリ＋古い行（closed/expired出品・需要記録・マッチ記録・放置ウォッチ・通知デデュープ）
     pruneMemory(now);
     try {
       db.pruneOldListings(7 * 24 * 60 * 60 * 1000);
+      db.pruneWantHits(30 * 24 * 60 * 60 * 1000);
+      db.pruneMatches(7 * 24 * 60 * 60 * 1000);
+      db.pruneWatches(WATCH_TTL);
+      for (const [k, ts] of notifiedPairs) {
+        if (now - ts > MATCH_DEDUP_TTL) notifiedPairs.delete(k);
+      }
     } catch (e) {
       console.error('出品プルーニング失敗:', e);
+    }
+    // 週刊マーケットニュース（/週報設置 済みなら7日ごとに投稿）
+    try {
+      const newsCh = db.getSetting('news_channel_id');
+      if (newsCh) {
+        const last = Number(db.getSetting('last_weekly_news') || 0);
+        if (now - last >= WEEK) {
+          db.setSetting('last_weekly_news', String(now)); // 先に記録＝送信失敗しても連投しない
+          const ch = await client.channels.fetch(newsCh).catch(() => null);
+          if (ch) await ch.send(buildNewsPayload()).catch((e) => console.error('週報投稿失敗:', e));
+        }
+      }
+    } catch (e) {
+      console.error('週報処理失敗:', e);
     }
     // パネルを常に最下部に保つ（操作チャンネルで最後のメッセージがパネルでなければ貼り直す）
     try {
@@ -1195,7 +1554,6 @@ export function startRoomExpiryLoop(client) {
     } catch (e) {
       console.error('パネル最下部維持失敗:', e);
     }
-  }, 60 * 1000);
 }
 
 // 起動時：DBの絵文字IDを「アプリ絵文字」と突合し、存在しないものを除去（メニューが壊れるのを防ぐ）

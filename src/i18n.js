@@ -190,6 +190,33 @@ const D = {
     en: '⚠️ That wording isn’t allowed. Please rephrase.',
   },
 
+  // 出品カード送信失敗（孤児出品防止）
+  post_fail: {
+    ja: '❌ 出品カードの投稿に失敗したよ（権限/チャンネル設定を確認）。出品は登録されてないから、もう一度試してね。',
+    en: '❌ Failed to post the listing card (check permissions/channel). Nothing was listed — please try again.',
+  },
+
+  // ウォッチリスト（📌 出品されたら通知）
+  watch_button: { ja: '出品されたら通知', en: 'Notify me when listed' },
+  watch_saved: {
+    ja: '📌「{item}」をウォッチ登録したよ！出品されたら📋出品リストでお知らせするね（登録は最大{n}件・14日で自動解除）。',
+    en: '📌 Watching “{item}”! You’ll be pinged in the feed when it’s listed (max {n} watches, auto-expires in 14 days).',
+  },
+  watch_limit: {
+    ja: '⚠️ ウォッチは最大{n}件までだよ。通知が届くか、14日経つと枠が空くよ。',
+    en: '⚠️ You can watch up to {n} items. A slot frees up when you get notified or after 14 days.',
+  },
+
+  // 両者✅（取引完了の相互確認）
+  done_wait_partner: {
+    ja: '✅ OK！**相手も✅を押すと成立**するよ。少し待ってね。',
+    en: '✅ Got it! The trade completes **when your partner also presses ✅**.',
+  },
+  done_already: {
+    ja: '⏳ もう✅済みだよ。相手の✅待ち！',
+    en: '⏳ You already pressed ✅ — waiting for your partner!',
+  },
+
   // 運営
   panel_set: {
     ja: '✅ このチャンネルに操作パネルを設置したよ（出品はフィードへ流れる）。',

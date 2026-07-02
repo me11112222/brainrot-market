@@ -1,27 +1,38 @@
-# BrainrotBot 🤖
+# BrainrotBot 🤖 (MEGA MECHSPOT)
 
-ブレインロットファイト【Fight the BRAINROT】用の自作Discord Bot。
+ブレインロットファイト【Fight the BRAINROT】（32k人・日英）用の **アイテム交換マーケットBot**。
+出品をスレッドではなくDB行にすることで「1サーバー1000アクティブスレッド上限」を根本解決。
 
-## 目的（ロードマップ）
-- **Phase 0**: 基盤（起動・スラッシュコマンド）← 今ここ
-- **Phase 1**: マッチング型マーケットプレイス（出品/探す/マッチ）→ スレッド1000上限の根本解決
-- **Phase 2**: レベル/ランク（`/rank` `/leaderboard`）
-- later: 進捗バー / 35k達成演出 / 招待ランキング
+📖 **新しいセッションはまず [HANDOFF_2026-06-30.md](HANDOFF_2026-06-30.md) を読むこと**（全体像・本番情報・運用手順）。
+
+## 主な機能
+- 🟢 **出品** … 画像ピッカー（カテゴリ→アイテム→変異/★/特性）＋ほしいもの/メモ
+- 🔍 **探す** … 完全一致→あいまい→戦闘力近似のフォールバック検索／💱逆引き（相手のほしいもので探す）
+- 📌 **ウォッチ** … 検索空振り時に「出品されたら通知」を予約（1人5件・14日で自動解除）
+- 💞 **自動マッチング** … 新規出品と条件が噛み合う既存出品を検出して両者にフィードで提案
+- 🤝 **取引ルーム** … 1出品1プライベートスレッド／無反応5分警告→10分自動クローズ→自動再出品
+- ✅ **両者✅で取引成立** … 出品者＋相手の両方が押して成立 → `trades` に実績記録
+- 🏅 **取引実績** … 出品カードに「✅取引実績N回」表示／`/実績ロール設定` で自動ロール付与
+- 🔥 **需要バッジ** … 直近7日の需要が供給を大きく上回るアイテムの出品カードに🔥表示
+- 📊 **ランキング** … 供給（出品数）×需要（直近7日・ユニークユーザー）
+- 📰 **週報** … `/週報設置` で週刊マーケットニュースを自動投稿
+- 🛡️ **荒らし対策** … レート制限・NGワード/URL弾き・メンション無効化・サーバーロック
+- 🌐 **日英対応** … エフェメラルは `interaction.locale`、共有メッセージは日英併記
+
+## 運営コマンド（ManageGuild）
+`/パネル設置` `/フィード設置` `/図鑑リロード`（再起動なしで新キャラ反映） `/週報設置` `/実績ロール設定`
 
 ## 技術
-Node.js + discord.js v14 / 本番ホスティング: Railway
+- Node.js 22.14+（`node:sqlite` / `VACUUM INTO` バックアップ）+ discord.js v14 (ESM)
+- DB: `data.sqlite`（WAL）／図鑑: `characters.json`（`CATALOG_PATH`）
+- 本番: GCP e2-micro VM + systemd（手順は [DEPLOY.md](DEPLOY.md)）
+- バックアップ: `scripts/backup-db.js` + `deploy/brainrot-backup.timer`（日次・7世代ローテ）
 
 ## セットアップ（ローカルテスト）
 1. `.env.example` をコピーして `.env` を作成し、値を埋める
    - `DISCORD_TOKEN`: Developer Portal の Bot トークン（秘密）
-   - `CLIENT_ID`: アプリID（設定済み）
-   - `GUILD_ID`: テストサーバー(NONE)のID
-2. 依存をインストール: `npm install`
-3. 起動: `npm start`
-4. Discordで `/ping` → `pong` が返ればOK
-
-## デプロイ（本番 / Railway）
-1. このリポジトリをGitHubにpush
-2. Railway → Deploy from GitHub
-3. 環境変数（DISCORD_TOKEN等）をRailwayに設定
-4. デプロイ → 24時間稼働
+   - `CLIENT_ID`: アプリID
+   - `GUILD_ID`: テストサーバーのID
+   - `CATALOG_PATH`: characters.json のパス
+2. `npm install` → `npm start`
+3. Discordで `/ping` → `pong` が返ればOK

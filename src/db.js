@@ -151,15 +151,31 @@ export function getListing(id) {
   return db.prepare(`SELECT * FROM listings WHERE id=?`).get(id);
 }
 
-// 出すものをキーワード検索（ハイブリッドの第一歩＝フリーテキスト部分一致）
+// LIKE用にユーザー入力の % _ \ をエスケープ（ワイルドカード注入防止）
+function likeArg(keyword) {
+  return '%' + String(keyword).replace(/([\\%_])/g, '\\$1') + '%';
+}
+
+// 出すものを検索：まず「ベース名の完全一致」（正確）→足りなければ表記の部分一致で補完
 export function searchListings(keyword, limit = 5) {
-  return db
+  const exact = db
     .prepare(
       `SELECT * FROM listings
-       WHERE status='active' AND give_item LIKE ?
+       WHERE status='active' AND give_name = ?
        ORDER BY created_at DESC LIMIT ?`,
     )
-    .all(`%${keyword}%`, limit);
+    .all(keyword, limit);
+  if (exact.length >= limit) return exact;
+  const seen = new Set(exact.map((r) => r.id));
+  const fuzzy = db
+    .prepare(
+      `SELECT * FROM listings
+       WHERE status='active' AND give_item LIKE ? ESCAPE '\\'
+       ORDER BY created_at DESC LIMIT ?`,
+    )
+    .all(likeArg(keyword), limit)
+    .filter((r) => !seen.has(r.id));
+  return [...exact, ...fuzzy].slice(0, limit);
 }
 
 // 逆引き：相手の「ほしいもの(want)」をキーワード検索（自分が持ってる物の出し先を探す）
@@ -167,10 +183,48 @@ export function searchByWant(keyword, limit = 10) {
   return db
     .prepare(
       `SELECT * FROM listings
-       WHERE status='active' AND want_item LIKE ?
+       WHERE status='active' AND want_item LIKE ? ESCAPE '\\'
        ORDER BY created_at DESC LIMIT ?`,
     )
-    .all(`%${keyword}%`, limit);
+    .all(likeArg(keyword), limit);
+}
+
+// 自動マッチング用①：相手の want に「このベース名」が含まれるアクティブ出品
+export function listingsWanting(giveName, excludeSellerId, limit = 25) {
+  return db
+    .prepare(
+      `SELECT * FROM listings
+       WHERE status='active' AND seller_id <> ? AND want_item LIKE ? ESCAPE '\\'
+       ORDER BY created_at DESC LIMIT ?`,
+    )
+    .all(excludeSellerId, likeArg(giveName), limit);
+}
+
+// 自動マッチング用②：自分の want 文に相手の give_name が含まれるアクティブ出品
+export function listingsOffering(wantText, excludeSellerId, limit = 25) {
+  return db
+    .prepare(
+      `SELECT * FROM listings
+       WHERE status='active' AND seller_id <> ?
+         AND give_name IS NOT NULL AND give_name <> ''
+         AND instr(?, give_name) > 0
+       ORDER BY created_at DESC LIMIT ?`,
+    )
+    .all(excludeSellerId, String(wantText), limit);
+}
+
+// あるベース名のアクティブ出品数（🔥需要バッジの供給側）
+export function countActiveByName(name) {
+  return db
+    .prepare(`SELECT COUNT(*) AS c FROM listings WHERE status='active' AND give_name=?`)
+    .get(name).c;
+}
+
+// 直近N日の新規出品数（週報用）
+export function countListingsSince(sinceMs) {
+  return db
+    .prepare(`SELECT COUNT(*) AS c FROM listings WHERE created_at >= ?`)
+    .get(Date.now() - sinceMs).c;
 }
 
 export function listByUser(userId) {
@@ -288,6 +342,17 @@ try {
 } catch {
   /* 既にある */
 }
+// 両者✅方式：出品者の✅フラグと、✅を押した相手（買い手）のID
+try {
+  db.exec(`ALTER TABLE match_rooms ADD COLUMN done_seller INTEGER NOT NULL DEFAULT 0`);
+} catch {
+  /* 既にある */
+}
+try {
+  db.exec(`ALTER TABLE match_rooms ADD COLUMN done_buyer_id TEXT`);
+} catch {
+  /* 既にある */
+}
 
 export function getRoom(listingId) {
   return db.prepare(`SELECT * FROM match_rooms WHERE listing_id=?`).get(listingId);
@@ -355,6 +420,109 @@ export function setRoomControl(listingId, msgId) {
     listingId,
   );
 }
+export function setRoomDoneSeller(listingId) {
+  db.prepare(`UPDATE match_rooms SET done_seller=1 WHERE listing_id=?`).run(listingId);
+}
+export function setRoomDoneBuyer(listingId, userId) {
+  db.prepare(`UPDATE match_rooms SET done_buyer_id=? WHERE listing_id=?`).run(
+    userId,
+    listingId,
+  );
+}
+
+// 古いマッチ記録の掃除（重複ルーム防止用の記録は数日で用済み）
+export function pruneMatches(maxAgeMs) {
+  const info = db
+    .prepare(`DELETE FROM matches WHERE created_at < ?`)
+    .run(Date.now() - maxAgeMs);
+  return Number(info.changes || 0);
+}
+
+// ===== 取引実績（両者✅で成立した取引の記録）=====
+// 実績カウント→信頼バッジ・実績ロール・週報の材料。消さずに貯める資産。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS trades (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    listing_id INTEGER,
+    seller_id  TEXT    NOT NULL,
+    buyer_id   TEXT    NOT NULL,
+    give_item  TEXT,
+    give_name  TEXT,
+    want_item  TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_trades_seller  ON trades(seller_id);
+  CREATE INDEX IF NOT EXISTS idx_trades_buyer   ON trades(buyer_id);
+  CREATE INDEX IF NOT EXISTS idx_trades_created ON trades(created_at);
+`);
+
+export function addTrade({ listingId, sellerId, buyerId, give, giveName, want }) {
+  db.prepare(
+    `INSERT INTO trades (listing_id, seller_id, buyer_id, give_item, give_name, want_item, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(listingId ?? null, sellerId, buyerId, give || null, giveName || null, want || null, Date.now());
+}
+
+// ユーザーの取引実績（出品側・買い手側の両方を合算）
+export function tradesOf(userId) {
+  return db
+    .prepare(`SELECT COUNT(*) AS c FROM trades WHERE seller_id=? OR buyer_id=?`)
+    .get(userId, userId).c;
+}
+
+// 直近N日の成立取引数（週報用）
+export function tradesSince(sinceMs) {
+  return db
+    .prepare(`SELECT COUNT(*) AS c FROM trades WHERE created_at >= ?`)
+    .get(Date.now() - sinceMs).c;
+}
+
+// ===== ウォッチリスト（📌 出品されたら通知）=====
+db.exec(`
+  CREATE TABLE IF NOT EXISTS watches (
+    user_id    TEXT    NOT NULL,
+    name       TEXT    NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, name)
+  );
+`);
+
+// 登録。1人あたり maxPerUser 件まで（'ok' / 'limit' を返す）
+export function addWatch(userId, name, maxPerUser = 5) {
+  const n = (name || '').trim();
+  if (!n || !userId) return 'limit';
+  const has = db
+    .prepare(`SELECT 1 FROM watches WHERE user_id=? AND name=?`)
+    .get(userId, n);
+  if (!has) {
+    const c = db
+      .prepare(`SELECT COUNT(*) AS c FROM watches WHERE user_id=?`)
+      .get(userId).c;
+    if (c >= maxPerUser) return 'limit';
+  }
+  db.prepare(
+    `INSERT OR REPLACE INTO watches (user_id, name, created_at) VALUES (?, ?, ?)`,
+  ).run(userId, n, Date.now());
+  return 'ok';
+}
+
+// あるアイテムのウォッチャー全員を取り出して登録解除（通知は1回きり＝スパム防止）
+export function takeWatchers(name) {
+  const ids = db
+    .prepare(`SELECT user_id FROM watches WHERE name=?`)
+    .all(name)
+    .map((r) => r.user_id);
+  if (ids.length) db.prepare(`DELETE FROM watches WHERE name=?`).run(name);
+  return ids;
+}
+
+// 古いウォッチの自動解除（放置登録の掃除）
+export function pruneWatches(maxAgeMs) {
+  const info = db
+    .prepare(`DELETE FROM watches WHERE created_at < ?`)
+    .run(Date.now() - maxAgeMs);
+  return Number(info.changes || 0);
+}
 
 // 汎用設定（スティッキーのパネル位置などを保存）
 db.exec(`
@@ -391,12 +559,36 @@ export function recordWant(name, userId) {
      ON CONFLICT(name, user_id) DO UPDATE SET ts = excluded.ts`,
   ).run(n, userId, Date.now());
 }
-export function topWants(limit = 10) {
+// 需要ランキング。sinceMs指定で「直近◯ミリ秒」の窓集計（鮮度重視）、省略で全期間
+export function topWants(limit = 10, sinceMs = null) {
+  if (sinceMs != null) {
+    return db
+      .prepare(
+        `SELECT name, COUNT(*) AS c FROM want_hits WHERE ts >= ?
+         GROUP BY name ORDER BY c DESC, name LIMIT ?`,
+      )
+      .all(Date.now() - sinceMs, limit);
+  }
   return db
     .prepare(
       `SELECT name, COUNT(*) AS c FROM want_hits GROUP BY name ORDER BY c DESC, name LIMIT ?`,
     )
     .all(limit);
+}
+
+// あるアイテムの直近需要数（🔥バッジ判定用・ユニークユーザー）
+export function demandCount(name, sinceMs) {
+  return db
+    .prepare(`SELECT COUNT(*) AS c FROM want_hits WHERE name=? AND ts >= ?`)
+    .get(name, Date.now() - sinceMs).c;
+}
+
+// 古い需要記録の掃除（ランキングの鮮度維持＋肥大化防止）
+export function pruneWantHits(maxAgeMs) {
+  const info = db
+    .prepare(`DELETE FROM want_hits WHERE ts < ?`)
+    .run(Date.now() - maxAgeMs);
+  return Number(info.changes || 0);
 }
 
 // アイテム名 → サーバーカスタム絵文字ID のマッピング（選択メニューに画像を出すため）

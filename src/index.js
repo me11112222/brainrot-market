@@ -21,6 +21,16 @@ import { readFileSync } from 'node:fs';
 
 const { DISCORD_TOKEN, CLIENT_ID, GUILD_ID } = process.env;
 
+// プロセスレベルの保険：握りつぶされた例外もログに残す。
+// uncaughtException は状態が壊れている可能性があるので落として systemd (Restart=always) に任せる。
+process.on('unhandledRejection', (err) => {
+  console.error('⚠️ unhandledRejection:', err);
+});
+process.on('uncaughtException', (err) => {
+  console.error('💥 uncaughtException:', err);
+  process.exit(1);
+});
+
 if (!DISCORD_TOKEN || !CLIENT_ID) {
   console.error('❌ .env が未設定です（DISCORD_TOKEN / CLIENT_ID は必須）');
   process.exit(1);
