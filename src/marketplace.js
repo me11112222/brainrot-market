@@ -26,7 +26,8 @@ const ROOM_WARN = 5 * 60 * 1000; // 5分無反応で「あと約5分で削除」
 const ROOM_IDLE_TTL = 10 * 60 * 1000; // 10分無反応で削除（＋自動再出品）
 const ROOM_HARD_MAX = 24 * 60 * 60 * 1000; // 活動があっても24hで強制終了（保険）
 const LISTING_TTL = 7 * 24 * 60 * 60 * 1000; // 出品は7日で自動失効
-const WEEK = 7 * 24 * 60 * 60 * 1000;
+const WEEK = 7 * 24 * 60 * 60 * 1000; // 🔥バッジ・📊ランキングの需要集計に使う窓（据え置き）
+const DAY = 24 * 60 * 60 * 1000; // 📰デイリーニュースの投稿間隔＆集計窓
 const WATCH_MAX = 5; // 📌ウォッチは1人5件まで
 const WATCH_TTL = 14 * 24 * 60 * 60 * 1000; // 放置ウォッチは14日で自動解除
 const MATCH_DEDUP_TTL = 6 * 60 * 60 * 1000; // 同じ2人への💞マッチ通知は6hに1回まで
@@ -103,8 +104,8 @@ export const marketplaceCommands = [
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .toJSON(),
   new SlashCommandBuilder()
-    .setName('週報設置')
-    .setDescription('【運営用】週刊マーケットニュースをこのチャンネルに自動投稿（週1回）')
+    .setName('日報設置')
+    .setDescription('【運営用】デイリーマーケットニュースをこのチャンネルに自動投稿（毎日）')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .toJSON(),
   new SlashCommandBuilder()
@@ -598,26 +599,26 @@ async function replyRanking(interaction) {
     .setFooter({ text: t(lc, 'rank_hint') });
   await interaction.reply({ embeds: [e], flags: MessageFlags.Ephemeral });
 }
-// 週刊マーケットニュース（共有・日英併記）。/週報設置 したチャンネルに週1で自動投稿
+// デイリーマーケットニュース（共有・日英併記）。/日報設置 したチャンネルに毎日自動投稿
 function buildNewsPayload() {
   const sup = db.topSupply(5);
-  const dem = db.topWants(5, WEEK);
-  const trades = db.tradesSince(WEEK);
-  const newListings = db.countListingsSince(WEEK);
+  const dem = db.topWants(5, DAY);
+  const trades = db.tradesSince(DAY);
+  const newListings = db.countListingsSince(DAY);
   const fmt = (rows) =>
     rows.length
       ? rows.map((r, i) => `**${i + 1}.** ${emojiMention(r.name)} ${r.name} ×${r.c}`).join('\n')
       : '（データなし / no data）';
   const e = new EmbedBuilder()
     .setColor(COLOR)
-    .setTitle('📰 週刊マーケットニュース / Weekly Market News')
+    .setTitle('📰 デイリーマーケットニュース / Daily Market News')
     .setDescription(
-      `今週の新規出品 **${newListings}** 件・成立した取引 **${trades}** 件\n` +
-        `This week: **${newListings}** new listings, **${trades}** completed trades`,
+      `今日の新規出品 **${newListings}** 件・成立した取引 **${trades}** 件\n` +
+        `Today: **${newListings}** new listings, **${trades}** completed trades`,
     )
     .addFields(
       { name: '⬆️ よく出品されてる / Most listed', value: fmt(sup), inline: true },
-      { name: '🔥 よく探されてる / Most wanted (7d)', value: fmt(dem), inline: true },
+      { name: '🔥 よく探されてる / Most wanted (24h)', value: fmt(dem), inline: true },
     )
     .setFooter({
       text: '🛒マーケットパネルの「出品/探す」から参加してね！ / Join from the market panel!',
@@ -1246,12 +1247,12 @@ export async function handleMarketplaceInteraction(interaction) {
       });
       return true;
     }
-    if (interaction.commandName === '週報設置') {
+    if (interaction.commandName === '日報設置') {
       db.setSetting('news_channel_id', interaction.channelId);
-      db.setSetting('last_weekly_news', String(Date.now()));
+      db.setSetting('last_daily_news', String(Date.now()));
       await interaction.channel.send(buildNewsPayload()).catch(() => {});
       await interaction.reply({
-        content: '✅ 週刊マーケットニュースをこのチャンネルに週1回自動投稿するよ（↑いまのがサンプル）。',
+        content: '✅ デイリーマーケットニュースをこのチャンネルに毎日自動投稿するよ（↑いまのがサンプル）。',
         flags: MessageFlags.Ephemeral,
       });
       return true;
@@ -1518,19 +1519,19 @@ async function sweepOnce(client) {
     } catch (e) {
       console.error('出品プルーニング失敗:', e);
     }
-    // 週刊マーケットニュース（/週報設置 済みなら7日ごとに投稿）
+    // デイリーマーケットニュース（/日報設置 済みなら24hごとに投稿）
     try {
       const newsCh = db.getSetting('news_channel_id');
       if (newsCh) {
-        const last = Number(db.getSetting('last_weekly_news') || 0);
-        if (now - last >= WEEK) {
-          db.setSetting('last_weekly_news', String(now)); // 先に記録＝送信失敗しても連投しない
+        const last = Number(db.getSetting('last_daily_news') || 0);
+        if (now - last >= DAY) {
+          db.setSetting('last_daily_news', String(now)); // 先に記録＝送信失敗しても連投しない
           const ch = await client.channels.fetch(newsCh).catch(() => null);
-          if (ch) await ch.send(buildNewsPayload()).catch((e) => console.error('週報投稿失敗:', e));
+          if (ch) await ch.send(buildNewsPayload()).catch((e) => console.error('日報投稿失敗:', e));
         }
       }
     } catch (e) {
-      console.error('週報処理失敗:', e);
+      console.error('日報処理失敗:', e);
     }
     // パネルを常に最下部に保つ（操作チャンネルで最後のメッセージがパネルでなければ貼り直す）
     try {

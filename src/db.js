@@ -220,7 +220,7 @@ export function countActiveByName(name) {
     .get(name).c;
 }
 
-// 直近N日の新規出品数（週報用）
+// 直近N日の新規出品数（デイリーニュース用）
 export function countListingsSince(sinceMs) {
   return db
     .prepare(`SELECT COUNT(*) AS c FROM listings WHERE created_at >= ?`)
@@ -439,7 +439,7 @@ export function pruneMatches(maxAgeMs) {
 }
 
 // ===== 取引実績（両者✅で成立した取引の記録）=====
-// 実績カウント→信頼バッジ・実績ロール・週報の材料。消さずに貯める資産。
+// 実績カウント→信頼バッジ・実績ロール・デイリーニュースの材料。消さずに貯める資産。
 db.exec(`
   CREATE TABLE IF NOT EXISTS trades (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -470,7 +470,7 @@ export function tradesOf(userId) {
     .get(userId, userId).c;
 }
 
-// 直近N日の成立取引数（週報用）
+// 直近N日の成立取引数（デイリーニュース用）
 export function tradesSince(sinceMs) {
   return db
     .prepare(`SELECT COUNT(*) AS c FROM trades WHERE created_at >= ?`)
