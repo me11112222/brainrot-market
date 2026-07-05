@@ -692,6 +692,12 @@ db.exec(`
     PRIMARY KEY (party_id, user_id)
   );
 `);
+// 部屋の最終活動時刻（無人1時間で自動クローズ＝スレッド枠の回転用）
+try {
+  db.exec(`ALTER TABLE parties ADD COLUMN last_active INTEGER`);
+} catch {
+  /* 既にある */
+}
 
 export function addParty({ kind, hostId, hostTag, hostAvatar, power, minPower, fnId, character, size, note }) {
   const info = db
@@ -731,7 +737,27 @@ export function setPartyMessage(id, channelId, messageId) {
   );
 }
 export function setPartyThread(id, threadId) {
-  db.prepare(`UPDATE parties SET thread_id=? WHERE id=?`).run(threadId, id);
+  db.prepare(`UPDATE parties SET thread_id=?, last_active=? WHERE id=?`).run(
+    threadId,
+    Date.now(),
+    id,
+  );
+}
+export function touchParty(id) {
+  db.prepare(`UPDATE parties SET last_active=? WHERE id=?`).run(Date.now(), id);
+}
+export function touchPartyByThread(threadId) {
+  db.prepare(`UPDATE parties SET last_active=? WHERE thread_id=?`).run(Date.now(), threadId);
+}
+// 部屋つきで一定時間動きのない募集（無人クローズ対象）
+export function idlePartiesWithThread(idleMs) {
+  return db
+    .prepare(
+      `SELECT * FROM parties
+       WHERE status IN ('open','full') AND thread_id IS NOT NULL
+         AND COALESCE(last_active, created_at) < ?`,
+    )
+    .all(Date.now() - idleMs);
 }
 // ホストの進行中パーティ（1人1件/種別 の制限用）
 export function activePartyByHost(hostId, kind) {

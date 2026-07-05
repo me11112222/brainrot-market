@@ -23,6 +23,10 @@ import { t } from './i18n.js';
 import { cleanText, contentIssue, rateOk } from './moderation.js';
 
 const PARTY_TTL = 6 * 60 * 60 * 1000; // 募集は6時間で自動失効（ボスラッシュは当日集めが基本）
+// スレッド枠（ギルド全体1000）を守る2本柱:
+//   ①部屋は「最初の参加者が来た時」に作る＝参加者ゼロの募集はスレッド0本
+//   ②部屋は無人1時間で自動クローズ＝出発済みの部屋が枠に居座らない
+const PARTY_IDLE_TTL = 60 * 60 * 1000;
 const NO_PING = { parse: [] };
 
 // 種別ごとの見た目・ルール
@@ -310,33 +314,9 @@ async function createParty(interaction, kind, character) {
     note,
   });
   const party = db.getParty(partyId);
-  const k = KINDS[kind];
   try {
-    // 部屋（プライベートスレッド）を先に作る
-    const threadName =
-      kind === 'ritual' && character
-        ? `🔮儀式 ${character} #${partyId}`.slice(0, 90)
-        : `⚔️ボス戦 #${partyId} ${interaction.user.tag}`.slice(0, 90);
-    const thread = await parent.threads.create({
-      name: threadName,
-      type: ChannelType.PrivateThread,
-      invitable: false,
-      reason: 'パーティ募集 / party recruit',
-    });
-    await thread.members.add(uid).catch(() => {});
-    db.setPartyThread(partyId, thread.id);
-    await thread.send({
-      content: `<@${uid}>`,
-      embeds: [partyEmbed(party)],
-      allowedMentions: { users: [uid] },
-    });
-    const pin = await thread.send(
-      `🎮 手順: ①フレンド申請 ②ゲームに集合 ③出発したらホストが✅ / add friends → meet in game → host taps ✅\n` +
-        `👑 ホストFN / Host FN ID: \`${fnid}\``,
-    );
-    await pin.pin().catch(() => {});
-    await thread.send({ content: CONTROL_HINT_PTY, components: [controlRow(partyId)] });
-    // 募集カード（参加ボタン付き）をチャンネルへ
+    // 募集カード（参加ボタン付き）だけを出す。部屋（スレッド）は最初の参加者が来た時に作る
+    // ＝参加者ゼロの募集はスレッド枠（ギルド全体1000）を一切食わない
     const msg = await parent.send({
       embeds: [partyEmbed(party)],
       components: [joinRow(party)],
@@ -344,11 +324,51 @@ async function createParty(interaction, kind, character) {
     });
     db.setPartyMessage(partyId, msg.channelId, msg.id);
     schedulePartyPanelRepost(parent);
-    await interaction.editReply(t(lc, 'pty_created', { thread }));
+    await interaction.editReply(t(lc, 'pty_created'));
   } catch (err) {
     console.error('パーティ作成失敗:', err);
     db.setPartyStatus(partyId, 'closed');
     await interaction.editReply(t(lc, 'pty_create_fail'));
+  }
+}
+
+// 部屋（プライベートスレッド）を用意する。無ければ作ってホストを入れ、案内とボタンを設置。
+// 作れなければ null（スレッド上限など）。呼び出し側で参加を中止する。
+async function ensurePartyThread(client, party) {
+  if (party.thread_id) {
+    const existing = await client.channels.fetch(party.thread_id).catch(() => null);
+    if (existing) return existing;
+  }
+  const parent = await client.channels.fetch(party.channel_id).catch(() => null);
+  if (!parent || parent.type !== ChannelType.GuildText) return null;
+  try {
+    const threadName =
+      party.kind === 'ritual' && party.character
+        ? `🔮儀式 ${party.character} #${party.id}`.slice(0, 90)
+        : `⚔️ボス戦 #${party.id} ${party.host_tag || ''}`.slice(0, 90);
+    const thread = await parent.threads.create({
+      name: threadName,
+      type: ChannelType.PrivateThread,
+      invitable: false,
+      reason: 'パーティ募集 / party recruit',
+    });
+    await thread.members.add(party.host_id).catch(() => {});
+    db.setPartyThread(party.id, thread.id);
+    await thread.send({
+      content: `<@${party.host_id}>`,
+      embeds: [partyEmbed(party)],
+      allowedMentions: { users: [party.host_id] },
+    });
+    const pin = await thread.send(
+      `🎮 手順: ①フレンド申請 ②ゲームに集合 ③出発したらホストが✅ / add friends → meet in game → host taps ✅\n` +
+        `👑 ホストFN / Host FN ID: \`${party.fn_id || '?'}\``,
+    );
+    await pin.pin().catch(() => {});
+    await thread.send({ content: CONTROL_HINT_PTY, components: [controlRow(party.id)] });
+    return thread;
+  } catch (err) {
+    console.error('パーティ部屋作成失敗:', err);
+    return null;
   }
 }
 
@@ -426,37 +446,38 @@ async function submitJoin(interaction, partyId) {
     return interaction.editReply(t(lc, 'pty_full_ep'));
   }
   db.saveProfile(uid, fnid, power); // 次回のモーダルに自動入力
+  // 部屋を先に確保（初参加ならここで作られる）。作れなければ参加を中止＝データを汚さない
+  const thread = await ensurePartyThread(interaction.client, party);
+  if (!thread) {
+    return interaction.editReply(t(lc, 'pty_room_fail'));
+  }
   db.addPartyMember(partyId, uid, interaction.user.tag, power, fnid);
-  const thread = party.thread_id
-    ? await interaction.client.channels.fetch(party.thread_id).catch(() => null)
-    : null;
-  if (thread) {
-    await thread.members.add(uid).catch(() => {});
-    const after = memberLines(party).count;
+  db.touchParty(partyId);
+  await thread.members.add(uid).catch(() => {});
+  const after = memberLines(party).count;
+  await thread
+    .send({
+      content:
+        `🙋 <@${uid}> 参加 / joined!　${power ? `⚔️${power}　` : ''}FN: \`${fnid}\`　（${after}/${party.size}）\n` +
+        `<@${party.host_id}> フレンド申請してね！ / Host: send a friend request!`,
+      allowedMentions: { users: [party.host_id] },
+    })
+    .catch(() => {});
+  // 満員 → 全員にピン＆カードを満員表示に
+  if (after >= party.size) {
+    db.setPartyStatus(partyId, 'full');
+    const all = [party.host_id, ...db.partyMembers(partyId).map((m) => m.user_id)];
     await thread
       .send({
         content:
-          `🙋 <@${uid}> 参加！${power ? `⚔️${power}　` : ''}FN: \`${fnid}\`　（${after}/${party.size}）\n` +
-          `<@${party.host_id}> フレンド申請してね！ / Host: send a friend request!`,
-        allowedMentions: { users: [party.host_id] },
+          `🎉 **${party.size}人そろった！ / Party full!** ${all.map((id) => `<@${id}>`).join(' ')}\n` +
+          `全員フレンド申請→ゲームに集合！出発したらホストが「✅マッチ完了」！ / Add friends & meet in game — host taps ✅!`,
+        allowedMentions: { users: all.slice(0, 10) },
       })
       .catch(() => {});
-    // 満員 → 全員にピン＆カードを満員表示に
-    if (after >= party.size) {
-      db.setPartyStatus(partyId, 'full');
-      const all = [party.host_id, ...db.partyMembers(partyId).map((m) => m.user_id)];
-      await thread
-        .send({
-          content:
-            `🎉 **${party.size}人そろった！ / Party full!** ${all.map((id) => `<@${id}>`).join(' ')}\n` +
-            `全員フレンド申請→ゲームに集合！出発したらホストが「✅マッチ完了」！ / Add friends & meet in game — host taps ✅!`,
-          allowedMentions: { users: all.slice(0, 10) },
-        })
-        .catch(() => {});
-    }
   }
   await refreshPartyCard(interaction.client, db.getParty(partyId));
-  await interaction.editReply(t(lc, 'pty_joined', { thread: thread ?? '' }));
+  await interaction.editReply(t(lc, 'pty_joined', { thread }));
 }
 
 // ===== 退出 / 完了 =====
@@ -682,6 +703,7 @@ export function maybeRepostPartyControl(message) {
   if (message.author?.bot) return;
   const party = db.getPartyByThread(message.channelId);
   if (!party || !['open', 'full'].includes(party.status)) return;
+  db.touchPartyByThread(message.channelId); // 会話中は無人クローズしない
   const key = message.channelId;
   if (threadStickyTimers.has(key)) clearTimeout(threadStickyTimers.get(key));
   threadStickyTimers.set(
@@ -715,6 +737,15 @@ export function startPartySweepLoop(client) {
   }, 60 * 1000);
 }
 async function sweepParties(client) {
+  // 部屋の無人1時間クローズ（出発済み/放置の部屋がスレッド枠に居座らないように）
+  for (const p of db.idlePartiesWithThread(PARTY_IDLE_TTL)) {
+    db.setPartyStatus(p.id, 'expired');
+    await cleanupParty(
+      client,
+      p,
+      `🕐 1時間動きがなかったので部屋を閉じたよ。ゲーム楽しんで！ / Room closed after 1h of quiet — enjoy the game!`,
+    );
+  }
   // 6時間で自動失効（カード削除＋スレッドにお知らせ→削除）
   for (const p of db.expireParties(PARTY_TTL)) {
     await cleanupParty(

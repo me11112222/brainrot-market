@@ -244,12 +244,16 @@ const D = {
     en: '⚠️ You already have an open recruit. Disband it from 📋 Mine first.',
   },
   pty_created: {
-    ja: '✅ 募集を出したよ！部屋はこちら → {thread}（集まったら「✅マッチ完了」でスッキリ解散）',
-    en: '✅ Recruit posted! Your room → {thread} (tap ✅ Done once the party sets off)',
+    ja: '✅ 募集を出したよ！**参加者が来たら部屋ができて通知が飛ぶ**よ。取り下げは「📋マイ募集」からいつでも。',
+    en: '✅ Recruit posted! **A room opens and pings you when someone joins.** Disband anytime from 📋 Mine.',
   },
   pty_create_fail: {
     ja: '❌ 募集の作成に失敗（権限を確認してね）。',
     en: '❌ Failed to create the recruit (check permissions).',
+  },
+  pty_room_fail: {
+    ja: '❌ 部屋が作れなかった…（サーバーのスレッド枠が満杯かも）。少し待ってもう一度「🙋参加」してみてね。',
+    en: '❌ Couldn’t open the room (server thread limit may be full). Please try joining again in a bit.',
   },
   pty_notfound: { ja: '⚠️ この募集は見つからなかった。', en: '⚠️ Recruit not found.' },
   pty_ended: { ja: '⚠️ この募集はもう終了してるよ。', en: '⚠️ This recruit has ended.' },
