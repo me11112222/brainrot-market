@@ -2,6 +2,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { norm } from './textnorm.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const db = new DatabaseSync(join(__dirname, '..', 'data.sqlite'));
@@ -186,14 +187,18 @@ export function searchListings(keyword, limit = 5) {
 }
 
 // 逆引き：相手の「ほしいもの(want)」をキーワード検索（自分が持ってる物の出し先を探す）
+// 正規化して部分一致（全角/大文字小文字/スペース/かなカナのゆらぎを吸収）
 export function searchByWant(keyword, limit = 10) {
-  return db
+  const nq = norm(keyword);
+  if (!nq) return [];
+  const rows = db
     .prepare(
       `SELECT * FROM listings
-       WHERE status='active' AND want_item LIKE ? ESCAPE '\\'
-       ORDER BY created_at DESC LIMIT ?`,
+       WHERE status='active' AND want_item IS NOT NULL AND want_item <> ''
+       ORDER BY created_at DESC LIMIT 3000`,
     )
-    .all(likeArg(keyword), limit);
+    .all();
+  return rows.filter((r) => norm(r.want_item).includes(nq)).slice(0, limit);
 }
 
 // 自動マッチング用①：相手の want に「このベース名」が含まれるアクティブ出品

@@ -1,10 +1,25 @@
 // 図鑑カタログ（名前・レア度・画像）を読み込み、画像ピッカー用に提供する
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import { norm } from './textnorm.js';
 
+const __dirname = dirname(fileURLToPath(import.meta.url));
 const CDN = 'https://cdn.jsdelivr.net/gh/me11112222/brainrot-images@main/';
 // 本番(Linux VM)では CATALOG_PATH env で図鑑の場所を指定。未設定時はローカル開発用パス。
 const PATH =
   process.env.CATALOG_PATH || 'C:/AI/projects/event-tool/discord-bot/characters.json';
+
+// カタカナ読みエイリアス（サニー→SunnyAndMoony 等）。名前→ 読み or 読みの配列。
+// load()のたびに再読込＝/図鑑リロードで新キャラの読みも反映される
+let ALIASES = {};
+function loadAliases() {
+  try {
+    ALIASES = JSON.parse(readFileSync(join(__dirname, 'aliases.json'), 'utf8'));
+  } catch (e) {
+    console.warn('📚 aliases.json 読込失敗（英語名のみで検索）:', e.message);
+  }
+}
 
 // レア度をユーザー指定どおりに統合
 const GROUPS = [
@@ -22,9 +37,12 @@ const skinsByName = new Map();
 const attackByName = new Map();
 const metaByName = new Map();
 let allNames = [];
+// 検索インデックス: [{name, keys:[正規化名, 正規化読み...]}]（全角/かな/記号ゆらぎを吸収）
+let searchIndex = [];
 
 // 図鑑JSONを読み込んで索引を組み立てる。再読込にも使う（失敗時は旧データ維持で0を返す）
 function load() {
+  loadAliases();
   let next;
   try {
     next = JSON.parse(readFileSync(PATH, 'utf8'));
@@ -40,6 +58,7 @@ function load() {
   attackByName.clear();
   metaByName.clear();
   allNames = [];
+  searchIndex = [];
   for (const c of chars) {
     if (!c?.name) continue;
     if (c.rarity === 'Missing') continue; // Missingはトレード不可＝非表示
@@ -58,6 +77,13 @@ function load() {
     });
     if (!byCategory.has(g.label)) byCategory.set(g.label, []);
     byCategory.get(g.label).push(c.name);
+    // 検索キー: 正規化した英語名＋カタカナ読み（エイリアス）
+    const a = ALIASES[c.name];
+    const aliasList = Array.isArray(a) ? a : a ? [a] : [];
+    searchIndex.push({
+      name: c.name,
+      keys: [norm(c.name), ...aliasList.map(norm)].filter(Boolean),
+    });
   }
   return allNames.length;
 }
@@ -81,17 +107,31 @@ export function itemsByCategory(label) {
 export function allItemNames() {
   return allNames.slice();
 }
-export function searchNames(query, limit = 25) {
-  const q = (query || '').trim().toLowerCase();
-  if (!q) return [];
-  return allNames.filter((n) => n.toLowerCase().includes(q)).slice(0, limit);
+// 部分一致検索（正規化済み＝全角/半角・大文字小文字・スペース記号・ひらがな/カタカナのゆらぎを吸収。
+// カタカナ読みエイリアスにもヒット。スペース区切りは「全語含む」扱い: "la secret" / "secret la" 両方OK）
+function subMatch(query) {
+  const nq = norm(query);
+  if (!nq) return [];
+  const tokens = String(query)
+    .split(/\s+/)
+    .map(norm)
+    .filter(Boolean);
+  return searchIndex
+    .filter(
+      (e) =>
+        e.keys.some((k) => k.includes(nq)) ||
+        (tokens.length > 1 && e.keys.some((k) => tokens.every((t) => k.includes(t)))),
+    )
+    .map((e) => e.name);
 }
-// あいまい検索：まず部分一致、足りなければ似ているもの（バイグラムDice係数）で埋める。
+export function searchNames(query, limit = 25) {
+  return subMatch(query).slice(0, limit);
+}
+// あいまい検索：まず部分一致、足りなければ似ているもの（バイグラムDice係数・正規化済み）で埋める。
 // → 「一致なし」で行き止まりにせず、近いものを必ず提案する。
 function bigrams(s) {
-  const t = s.toLowerCase();
   const b = [];
-  for (let i = 0; i < t.length - 1; i++) b.push(t.slice(i, i + 2));
+  for (let i = 0; i < s.length - 1; i++) b.push(s.slice(i, i + 2));
   return b;
 }
 function dice(a, b) {
@@ -111,15 +151,14 @@ function dice(a, b) {
   return (2 * inter) / (A.length + B.length);
 }
 export function suggestNames(query, limit = 25) {
-  const q = (query || '').trim();
-  if (!q) return [];
-  const lower = q.toLowerCase();
-  const subs = allNames.filter((n) => n.toLowerCase().includes(lower));
+  const subs = subMatch(query);
   if (subs.length >= limit) return subs.slice(0, limit);
+  const nq = norm(query);
+  if (!nq) return subs.slice(0, limit);
   const seen = new Set(subs);
-  const fuzzy = allNames
-    .filter((n) => !seen.has(n))
-    .map((n) => [n, dice(lower, n)])
+  const fuzzy = searchIndex
+    .filter((e) => !seen.has(e.name))
+    .map((e) => [e.name, Math.max(...e.keys.map((k) => dice(nq, k)))])
     .filter((x) => x[1] >= 0.2)
     .sort((a, b) => b[1] - a[1])
     .map((x) => x[0]);
