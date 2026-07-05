@@ -32,18 +32,18 @@ const WATCH_MAX = 5; // 📌ウォッチは1人5件まで
 const WATCH_TTL = 14 * 24 * 60 * 60 * 1000; // 放置ウォッチは14日で自動解除
 const MATCH_DEDUP_TTL = 6 * 60 * 60 * 1000; // 同じ2人への💞マッチ通知は6hに1回まで
 const HOT_DEMAND_MIN = 3; // 🔥バッジ：直近7日の需要がこれ以上 かつ 供給の2倍以上
-// 取引ルームの常設・詐欺注意（日英併記・ピン留め）
+const RELIST_STRIKE_MAX = 5; // 出品者の不在（自動再出品）がこの回数に達したら自動取り下げ
+const DONE_REMIND_EVERY = 5 * 60 * 1000; // 片方✅済みの間、押してない側へ5分ごとにリマインド
+// 取引ルームの常設注意（日英併記・ピン留め）。子供が読めるよう最小限に絞る
 const SCAM_NOTICE =
-  '⚠️ **取引は自己責任で / Trade at your OWN RISK**\n' +
-  '・運営は取引トラブルに一切責任を負いません / Staff are NOT responsible for any trouble\n' +
-  '・**クロストレード禁止（他ゲーム・現金・アカウント等との交換）/ NO cross-trading (other games, real money, accounts, etc.)**\n' +
-  '・先払い要求・外部リンク・DM誘導は詐欺の可能性大 / Pay-first, external links or DM lures are likely SCAMS\n' +
-  '⏰ 10分会話が無いと、5分後に自動で閉じます / Auto-closes 5 min after 10 min of silence';
-// 取引が進みやすくなるコツ（子供向けに絵文字で短く）
-const TRADE_TIPS =
-  '📸 **実物のスクショを見せ合うと早い！** / Show screenshots!\n' +
-  '🎯 **ほしいものをハッキリ伝えよう！** / Say exactly what you want!\n' +
-  '🤝 決まったら出品者が「✅取引完了」を押す / Seller taps ✅ Done when agreed';
+  '⚠️ 取引は**自己責任** / Trade at your own risk\n' +
+  '🚫 **クロストレード・先払い・DM誘導 ＝ 詐欺！** / Cross-trading, pay-first & DM lures = SCAM\n' +
+  '✅ 終わったら**2人とも「取引完了」**を押す / **BOTH** press Done when finished\n' +
+  '⏰ 10分無言で自動クローズ / Auto-closes after 10 min of silence';
+// 取引完了ボタンの説明（作成時＆スティッキー貼り直しで共用・1行）
+const CONTROL_HINT =
+  '👇 終わったら**2人とも**「✅取引完了」（両方押すと実績にカウント）・間違えたら「🚪退出」\n' +
+  '**BOTH** press ✅ Done when finished (counts for both) — wrong room? 🚪 Leave';
 // 取引ルーム同時生成のレース防止（単一プロセス内ロック）
 const creatingRooms = new Set();
 // 荒らし対策のしきい値
@@ -133,7 +133,7 @@ export function buildPanel() {
         '📋 **マイ出品 / My listings** … 確認・取り下げ / view & withdraw',
         '📊 **ランキング / Ranking** … 人気の出品・需要を見る / popular supply & demand',
         '',
-        '※ 1出品=1ルーム・24hで自動クローズ / 1 room per listing, auto-closes in 24h.',
+        '※ 1出品=1ルーム・取引成立は**2人とも✅** / 1 room per listing・**BOTH** press ✅ to complete.',
       ].join('\n'),
     );
   const row = new ActionRowBuilder().addComponents(
@@ -224,7 +224,7 @@ function doneRow(listingId) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`mkt_done_${listingId}`)
-      .setLabel('取引完了 / Done (seller)')
+      .setLabel('取引完了 / Done')
       .setEmoji('✅')
       .setStyle(ButtonStyle.Success),
     new ButtonBuilder()
@@ -318,13 +318,10 @@ async function startMatch(interaction, listing) {
       embeds: [matchEmbed(listing)],
       allowedMentions: { users: [listing.seller_id, user.id] },
     });
-    await thread.send(TRADE_TIPS).catch(() => {});
     const notice = await thread.send(SCAM_NOTICE);
     await notice.pin().catch(() => {});
     const ctrl = await thread.send({
-      content:
-        '👇 出品者は終わったら「✅取引完了」、間違えて入った人は「🚪退出」/ ' +
-        'Seller: ✅ Done when finished. Wrong room? 🚪 Leave',
+      content: CONTROL_HINT,
       components: [doneRow(listing.id)],
     });
     db.setRoomControl(listing.id, ctrl.id);
@@ -393,12 +390,15 @@ async function handleDone(interaction, listingId) {
       return interaction.reply({ content: t(lc, 'done_already'), flags: MessageFlags.Ephemeral });
     }
     db.setRoomDoneSeller(listingId);
+    db.setRoomRemind(listingId, Date.now()); // いま告知するので次のリマインドは5分後から
+    const partners = db.getRoomMembers(listingId).filter((id) => id !== listing.seller_id);
     await interaction.reply({ content: t(lc, 'done_wait_partner'), flags: MessageFlags.Ephemeral });
     await interaction.channel
       ?.send({
         content:
-          '✅ 出品者が「取引完了」を押したよ！**相手も✅を押すと成立**するよ👇\n' +
-          '✅ Seller pressed Done! **Partner: press ✅ too to complete the trade** 👇',
+          `✅ 出品者が押したよ！${partners.map((id) => `<@${id}>`).join(' ')} **キミも✅を押すと成立**（両方押さないと実績にカウントされないよ）\n` +
+          '✅ Seller pressed Done! **Press ✅ too** — it only counts when BOTH press!',
+        allowedMentions: { users: partners.slice(0, 5) },
       })
       .catch(() => {});
   } else {
@@ -407,12 +407,13 @@ async function handleDone(interaction, listingId) {
       return interaction.reply({ content: t(lc, 'done_already'), flags: MessageFlags.Ephemeral });
     }
     db.setRoomDoneBuyer(listingId, uid);
+    db.setRoomRemind(listingId, Date.now());
     await interaction.reply({ content: t(lc, 'done_wait_partner'), flags: MessageFlags.Ephemeral });
     await interaction.channel
       ?.send({
         content:
-          `✅ <@${uid}> が「取引完了」を押したよ！**出品者 <@${listing.seller_id}> も✅を押すと成立**！\n` +
-          '✅ Partner pressed Done! **Seller: press ✅ too to complete the trade!**',
+          `✅ <@${uid}> が押したよ！<@${listing.seller_id}> **キミも✅を押すと成立**（両方押さないと実績にカウントされないよ）\n` +
+          '✅ Partner pressed Done! **Seller: press ✅ too** — it only counts when BOTH press!',
         allowedMentions: { users: [listing.seller_id] },
       })
       .catch(() => {});
@@ -436,11 +437,21 @@ async function finalizeTrade(interaction, listing, buyerId) {
     await ch?.messages?.delete(listing.message_id).catch(() => {});
   }
   await interaction.reply({ content: t(lc, 'deal_done'), flags: MessageFlags.Ephemeral });
+  // 実績カウント＋ロールまでの残り回数を見せる（集めたくなる仕掛け）
+  const ns = db.tradesOf(listing.seller_id);
+  const nb = db.tradesOf(buyerId);
+  const roleMin = Number(db.getSetting('trader_role_min') || 0);
+  let roleLine = '';
+  if (db.getSetting('trader_role_id') && roleMin && (ns < roleMin || nb < roleMin)) {
+    roleLine = `\n🏅 ${roleMin}回で実績ロールGET！ / Reach ${roleMin} trades for the role!`;
+  }
   await interaction.channel
-    ?.send(
-      `🎉 **取引成立！ / Trade complete!** <@${listing.seller_id}> ✕ <@${buyerId}>\n` +
-        '✅ 実績に記録したよ / Recorded to your trade stats',
-    )
+    ?.send({
+      content:
+        `🎉 **取引成立！ / Trade complete!**\n` +
+        `✅ 実績 / Trades: <@${listing.seller_id}> **${ns}回** ・ <@${buyerId}> **${nb}回**${roleLine}`,
+      allowedMentions: NO_PING,
+    })
     .catch(() => {});
   await grantTraderRole(interaction.guild, listing.seller_id);
   await grantTraderRole(interaction.guild, buyerId);
@@ -1347,6 +1358,7 @@ async function leaveRoom(interaction, listingId) {
 
 // 同じ条件で再出品（不在で時間切れした出品者向け。元を失効させ新カードを最新に出す）
 // 再出品の中核（自動/手動 共用）：元を失効＋古いカード削除＋同条件で新カードをフィード最新に出す。
+// 自動(ping=true)は不在ストライク+1を引き継ぐ。手動＝出品者の生存確認なので0にリセット。
 async function doRelist(client, old, ping = false) {
   const feedId = db.getSetting('feed_channel_id');
   const ch = feedId ? await client.channels.fetch(feedId).catch(() => null) : null;
@@ -1356,6 +1368,7 @@ async function doRelist(client, old, ping = false) {
     const oc = await client.channels.fetch(old.channel_id).catch(() => null);
     await oc?.messages?.delete(old.message_id).catch(() => {});
   }
+  const strikes = ping ? (old.relist_count || 0) + 1 : 0;
   const newId = db.addListing({
     sellerId: old.seller_id,
     give: old.give_item,
@@ -1364,13 +1377,14 @@ async function doRelist(client, old, ping = false) {
     note: old.note,
     sellerTag: old.seller_tag,
     sellerAvatar: old.seller_avatar,
+    relistCount: strikes,
   });
   db.setListingImages(newId, old.give_img, old.want_img);
   if (old.give_name) db.recordItem(old.give_name);
   const listing = db.getListing(newId);
   const msg = await ch.send({
     content: ping
-      ? `🔔 <@${old.seller_id}> 不在で時間切れ→自動で再出品したよ！「✅取引完了」を押すまで繰り返すよ / auto-re-listed (you were away)`
+      ? `🔔 <@${old.seller_id}> 不在で時間切れ→自動で再出品したよ（**不在${strikes}回目・${RELIST_STRIKE_MAX}回で自動取り下げ**）/ auto-re-listed (no-show ${strikes}/${RELIST_STRIKE_MAX})`
       : undefined,
     embeds: [listingEmbed(listing)],
     components: [dealRow(newId)],
@@ -1402,7 +1416,10 @@ async function relistListing(interaction, oldId) {
   });
 }
 
-// 閉鎖時：取引未完了なら自動再出品＋出品者へうるさいDM。買い手にも通知。
+// 閉鎖時の後始末。出品の行き先は3通り:
+//   A) 出品者が✅済みのまま相手の確認なし → 取引は済んだ扱いでクローズ（再出品しない・実績カウントなし）
+//   B) 不在ストライクが上限（5回）到達 → 自動取り下げ（逃げ出品の掃除）＋フィードで告知
+//   C) それ以外 → 自動再出品（ストライク+1）
 async function notifyRoomClosed(client, room) {
   try {
     const listing = db.getListing(room.listing_id);
@@ -1412,28 +1429,67 @@ async function notifyRoomClosed(client, room) {
     const ids = new Set(db.getRoomMembers(room.listing_id));
     if (sellerId) ids.add(sellerId);
     ids.delete(client.user.id);
-    // 取引完了してない（=active）なら自動再出品して最新に出す
     let relisted = null;
+    let sellerMsg;
+    let withRelistBtn = false;
     if (listing && listing.status === 'active') {
-      relisted = await doRelist(client, listing, true).catch(() => null);
+      if (room.done_seller) {
+        // A) 出品者は完了済み＝取引自体は終わった可能性が高い。ゾンビ再出品を防ぐ
+        db.setStatus(listing.id, 'closed');
+        if (listing.channel_id && listing.message_id) {
+          const oc = await client.channels.fetch(listing.channel_id).catch(() => null);
+          await oc?.messages?.delete(listing.message_id).catch(() => {});
+        }
+        sellerMsg =
+          `☑️ 「**${item}**」：あなたは✅済みだけど相手の✅が無いまま閉じたよ。出品は取り下げた（**両方✅が無いと実績にはカウントされない**）。\n` +
+          `☑️ “**${item}**”: closed without your partner's ✅. Listing removed (no trade counted — BOTH must press ✅).`;
+      } else if ((listing.relist_count || 0) + 1 >= RELIST_STRIKE_MAX) {
+        // B) 5回不在 → 取り下げ
+        db.setStatus(listing.id, 'expired');
+        if (listing.channel_id && listing.message_id) {
+          const oc = await client.channels.fetch(listing.channel_id).catch(() => null);
+          await oc?.messages?.delete(listing.message_id).catch(() => {});
+        }
+        sellerMsg =
+          `🗑️ 「**${item}**」は**不在${RELIST_STRIKE_MAX}回**で自動取り下げたよ。まだ交換したいなら「🟢出品する」からもう一度ね。\n` +
+          `🗑️ “**${item}**” was removed after ${RELIST_STRIKE_MAX} no-shows. Re-post from 🟢 Post if you still want to trade.`;
+        withRelistBtn = true; // ワンタップで復活できる導線は残す（押した時点で生存確認＝ストライク0）
+        // フィードにも告知（DM拒否勢に届ける＆「逃げたら消える」ルールの周知）
+        const feedId = db.getSetting('feed_channel_id');
+        const feed = feedId ? await client.channels.fetch(feedId).catch(() => null) : null;
+        await feed
+          ?.send({
+            content:
+              `🗑️ <@${sellerId}> の「**${item}**」は不在${RELIST_STRIKE_MAX}回で自動取り下げになったよ / removed after ${RELIST_STRIKE_MAX} no-shows`,
+            allowedMentions: { users: sellerId ? [sellerId] : [] },
+          })
+          .catch(() => {});
+      } else {
+        // C) 通常の自動再出品
+        relisted = await doRelist(client, listing, true).catch(() => null);
+      }
     }
     const buyerMsg =
       `⌛ 取引ルーム「**${item}**」は無反応で自動で閉じたよ。また「🔍探す」から試してね。\n` +
       `⌛ The trade room for “**${item}**” closed due to inactivity. Try again from “🔍 Find”.`;
-    const sellerMsg = relisted
-      ? `🔔🔔 あなたの出品「**${item}**」で取引ルームが立ったけど、**不在で10分会話が無く時間切れ**…！\n` +
-        `🔁 **自動でもう一度出品しといたよ**（📋出品リストの最新に出てる）。「✅取引完了」を押すまで、誰か来るたび自動で繰り返すよ。\n` +
-        `🔔🔔 Room for “**${item}**” timed out (you were away). **Auto-re-listed** — it’ll keep re-listing until you press ✅ Done.`
-      : `⌛ あなたの出品「**${item}**」の取引ルームが時間切れで閉じたよ。\n⌛ Your trade room for “**${item}**” timed out.`;
+    if (!sellerMsg) {
+      sellerMsg = relisted
+        ? `🔔🔔 あなたの出品「**${item}**」で取引ルームが立ったけど、**不在で10分会話が無く時間切れ**…！\n` +
+          `🔁 **自動でもう一度出品しといたよ**（不在${(relisted.relist_count || 0)}回目・${RELIST_STRIKE_MAX}回で自動取り下げ）。\n` +
+          `🔔🔔 Room for “**${item}**” timed out (you were away). **Auto-re-listed** (no-show ${(relisted.relist_count || 0)}/${RELIST_STRIKE_MAX}).`
+        : `⌛ あなたの出品「**${item}**」の取引ルームが時間切れで閉じたよ。\n⌛ Your trade room for “**${item}**” timed out.`;
+      withRelistBtn = !relisted;
+    }
     for (const id of ids) {
       const u = await client.users.fetch(id).catch(() => null);
       if (!u) continue;
       if (sellerId && id === sellerId) {
-        if (relisted) await u.send(sellerMsg).catch(() => {});
-        else
-          await u
-            .send({ content: sellerMsg, components: listing ? [relistRow(listing.id)] : [] })
-            .catch(() => {});
+        await u
+          .send({
+            content: sellerMsg,
+            components: withRelistBtn && listing ? [relistRow(listing.id)] : [],
+          })
+          .catch(() => {});
       } else {
         await u.send(buyerMsg).catch(() => {});
       }
@@ -1474,15 +1530,42 @@ async function sweepOnce(client) {
         db.deleteRoom(r.listing_id);
         continue;
       }
+      const listing = db.getListing(r.listing_id);
       const lastActive = r.last_active || r.created_at;
       const idle = now - lastActive;
       const age = now - r.created_at;
+      // 片方だけ✅済み（確認待ち）: 無反応クローズを保留し、押してない側に定期リマインド。
+      // 「取引したのに片方が押さない→カウントされない」を潰す。24h上限だけは生かす。
+      const pending =
+        listing &&
+        listing.status === 'active' &&
+        ((r.done_seller && !r.done_buyer_id) || (!r.done_seller && r.done_buyer_id));
+      if (pending && age < ROOM_HARD_MAX) {
+        // 押してない側＝出品者 or 出品者以外のルーム参加者（退出済みは対象外＝再追加ピンで引き戻さない）
+        const targets = !r.done_seller
+          ? [listing.seller_id]
+          : db.getRoomMembers(r.listing_id).filter((id) => id !== listing.seller_id);
+        if (targets.length) {
+          if (now - (r.done_remind_at || 0) >= DONE_REMIND_EVERY) {
+            db.setRoomRemind(r.listing_id, now);
+            await thread
+              .send({
+                content:
+                  `⏰ ${targets.map((id) => `<@${id}>`).join(' ')} 「✅取引完了」を押してね！**2人とも押すと成立**（実績にカウント）だよ\n` +
+                  `⏰ Press ✅ Done! It only completes & counts when **BOTH** press!`,
+                allowedMentions: { users: targets.slice(0, 5) },
+              })
+              .catch(() => {});
+          }
+          continue; // 確認待ちの間は閉じない
+        }
+        // リマインドする相手がいない（全員退出）→ 通常の無反応クローズに任せる
+      }
       if (idle >= ROOM_IDLE_TTL || age >= ROOM_HARD_MAX) {
-        await notifyRoomClosed(client, r); // 取引未完了なら自動再出品＋うるさいDM
+        await notifyRoomClosed(client, r); // 出品者✅済み→クローズ / 5ストライク→取り下げ / 他→自動再出品
         await thread.delete().catch(() => {});
         db.deleteRoom(r.listing_id);
       } else if (idle >= ROOM_WARN && !r.warned) {
-        const listing = db.getListing(r.listing_id);
         const ping = listing ? `<@${listing.seller_id}>` : '';
         const closeAt = Math.floor((lastActive + ROOM_IDLE_TTL) / 1000); // Discordが自動カウントダウン表示
         await thread
@@ -1624,9 +1707,7 @@ async function repostThreadControl(thread) {
       if (old) await old.delete().catch(() => {});
     }
     const msg = await thread.send({
-      content:
-        '👇 出品者は終わったら「✅取引完了」、間違えて入った人は「🚪退出」/ ' +
-        'Seller: ✅ Done when finished. Wrong room? 🚪 Leave',
+      content: CONTROL_HINT,
       components: [doneRow(room.listing_id)],
     });
     db.setRoomControl(room.listing_id, msg.id);

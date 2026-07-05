@@ -53,6 +53,12 @@ try {
 } catch {
   /* 既にある */
 }
+// 自動再出品の回数（=出品者の不在回数）。5回で自動取り下げ（逃げ出品の掃除）
+try {
+  db.exec(`ALTER TABLE listings ADD COLUMN relist_count INTEGER NOT NULL DEFAULT 0`);
+} catch {
+  /* 既にある */
+}
 
 // 大規模運用向けインデックス（検索・集計・自分の出品の高速化）
 db.exec(`
@@ -80,11 +86,11 @@ const SEED_ITEMS = [
   for (const s of SEED_ITEMS) seed.run(s);
 }
 
-export function addListing({ sellerId, give, giveName, want, note, sellerTag, sellerAvatar }) {
+export function addListing({ sellerId, give, giveName, want, note, sellerTag, sellerAvatar, relistCount = 0 }) {
   const info = db
     .prepare(
-      `INSERT INTO listings (seller_id, give_item, give_name, want_item, note, seller_tag, seller_avatar, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO listings (seller_id, give_item, give_name, want_item, note, seller_tag, seller_avatar, relist_count, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       sellerId,
@@ -94,6 +100,7 @@ export function addListing({ sellerId, give, giveName, want, note, sellerTag, se
       note || null,
       sellerTag || null,
       sellerAvatar || null,
+      relistCount || 0,
       Date.now(),
     );
   return Number(info.lastInsertRowid);
@@ -353,6 +360,12 @@ try {
 } catch {
   /* 既にある */
 }
+// 片方だけ✅の間、押してない側へ送る定期リマインドの最終送信時刻
+try {
+  db.exec(`ALTER TABLE match_rooms ADD COLUMN done_remind_at INTEGER`);
+} catch {
+  /* 既にある */
+}
 
 export function getRoom(listingId) {
   return db.prepare(`SELECT * FROM match_rooms WHERE listing_id=?`).get(listingId);
@@ -422,6 +435,9 @@ export function setRoomControl(listingId, msgId) {
 }
 export function setRoomDoneSeller(listingId) {
   db.prepare(`UPDATE match_rooms SET done_seller=1 WHERE listing_id=?`).run(listingId);
+}
+export function setRoomRemind(listingId, ts) {
+  db.prepare(`UPDATE match_rooms SET done_remind_at=? WHERE listing_id=?`).run(ts, listingId);
 }
 export function setRoomDoneBuyer(listingId, userId) {
   db.prepare(`UPDATE match_rooms SET done_buyer_id=? WHERE listing_id=?`).run(
