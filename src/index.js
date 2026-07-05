@@ -16,6 +16,13 @@ import {
   maybeRepostThreadControl,
   syncEmojisAcrossGuilds,
 } from './marketplace.js';
+import {
+  partyCommands,
+  handlePartyInteraction,
+  startPartySweepLoop,
+  maybeRepostPartySticky,
+  maybeRepostPartyControl,
+} from './party.js';
 import { importItemNames } from './db.js';
 import { readFileSync } from 'node:fs';
 
@@ -43,6 +50,7 @@ const commands = [
     .setDescription('BrainrotBot の応答確認')
     .toJSON(),
   ...marketplaceCommands,
+  ...partyCommands,
 ];
 
 const client = new Client({
@@ -122,8 +130,10 @@ client.once(Events.ClientReady, async (c) => {
   }
 
   await syncEmojisAcrossGuilds(client); // 削除済み絵文字をDBから掃除
-  startRoomExpiryLoop(client); // 取引ルームの無反応1h自動クローズ
+  startRoomExpiryLoop(client); // 取引ルームの無反応自動クローズ等
+  startPartySweepLoop(client); // パーティ募集の自動失効等
   console.log('🛒 マーケットプレイス機能 起動');
+  console.log('🎮 パーティ募集機能 起動');
 });
 
 // 招待されても許可外サーバーなら即退出
@@ -144,6 +154,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
       );
       return;
     }
+    // パーティ募集（pty_ 名前空間・/募集パネル設置）
+    if (await handlePartyInteraction(interaction)) return;
     // マーケットプレイス（コマンド・ボタン・モーダル）
     await handleMarketplaceInteraction(interaction);
   } catch (err) {
@@ -160,8 +172,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
 // スティッキー：パネルチャンネルに投稿が来たらパネルを最下部へ貼り直す
 client.on(Events.MessageCreate, (message) => {
   try {
-    maybeRepostSticky(message); // 募集チャンネルのパネルを最下部へ
+    maybeRepostSticky(message); // マーケットのパネルを最下部へ
     maybeRepostThreadControl(message); // 取引ルームの「取引完了」を最下部へ
+    maybeRepostPartySticky(message); // パーティ募集パネルを最下部へ
+    maybeRepostPartyControl(message); // パーティ部屋の「マッチ完了」を最下部へ
   } catch (err) {
     console.error('スティッキー処理エラー:', err);
   }

@@ -217,6 +217,74 @@ const D = {
     en: '⏳ You already pressed ✅ — waiting for your partner!',
   },
 
+  // パーティ募集（⚔️ボス戦 / 🔮儀式）
+  pty_panel_set: {
+    ja: '✅ このチャンネルにパーティ募集パネルを設置したよ（募集カードと部屋もここにできる）。',
+    en: '✅ Party Finder panel placed here (recruit cards & rooms will appear in this channel).',
+  },
+  pty_new_boss_title: { ja: '⚔️ ボス戦募集（8人パーティ）', en: '⚔️ Boss party (8 players)' },
+  pty_new_ritual_title: { ja: '🔮 儀式募集', en: '🔮 Ritual party' },
+  pty_m_fnid: { ja: 'フォートナイトID（部屋にだけ表示）', en: 'Fortnite ID (shown only in the room)' },
+  pty_m_power: { ja: 'あなたの戦闘力（例: 12000）', en: 'Your battle power (e.g. 12000)' },
+  pty_m_minpower: { ja: '参加条件の戦闘力（任意・例: 8000）', en: 'Min power to join (optional)' },
+  pty_m_size: { ja: '募集人数 2〜8（空欄で4）', en: 'Party size 2-8 (blank = 4)' },
+  pty_m_note: { ja: 'メモ（任意・例: 21時から！）', en: 'Note (optional)' },
+  pty_join_title: { ja: '🙋 パーティ #{id} に参加', en: '🙋 Join party #{id}' },
+  pty_bad_power: {
+    ja: '⚠️ 戦闘力は数字で入れてね（例: 12000）。',
+    en: '⚠️ Enter your battle power as a number (e.g. 12000).',
+  },
+  pty_exists: {
+    ja: '⚠️ すでに募集中のパーティがあるよ。「📋マイ募集」から解散してから新しく募集してね。',
+    en: '⚠️ You already have an open recruit. Disband it from 📋 Mine first.',
+  },
+  pty_created: {
+    ja: '✅ 募集を出したよ！部屋はこちら → {thread}（集まったら「✅マッチ完了」でスッキリ解散）',
+    en: '✅ Recruit posted! Your room → {thread} (tap ✅ Done once the party sets off)',
+  },
+  pty_create_fail: {
+    ja: '❌ 募集の作成に失敗（権限を確認してね）。',
+    en: '❌ Failed to create the recruit (check permissions).',
+  },
+  pty_notfound: { ja: '⚠️ この募集は見つからなかった。', en: '⚠️ Recruit not found.' },
+  pty_ended: { ja: '⚠️ この募集はもう終了してるよ。', en: '⚠️ This recruit has ended.' },
+  pty_own: {
+    ja: '⚠️ 自分の募集だよ！部屋で待ってれば参加者が来るよ。',
+    en: '⚠️ This is your own recruit — wait in your room for joiners!',
+  },
+  pty_already: { ja: '✅ もう参加してるよ！部屋はこちら → {thread}', en: '✅ Already in! Room → {thread}' },
+  pty_full_ep: {
+    ja: '😢 満員だったよ…また次の募集でね！',
+    en: '😢 That party just filled up… catch the next one!',
+  },
+  pty_minpower: {
+    ja: '⚠️ この募集は ⚔️{min} 以上が条件だよ（あなた: {p}）。',
+    en: '⚠️ This party requires ⚔️{min}+ (you: {p}).',
+  },
+  pty_joined: {
+    ja: '🙋 参加したよ！部屋でフレンドID交換してね → {thread}',
+    en: '🙋 Joined! Swap Fortnite IDs in the room → {thread}',
+  },
+  pty_host_only: { ja: '⚠️ ホストだけが押せるよ。', en: '⚠️ Only the host can do that.' },
+  pty_done: { ja: '🎉 マッチ完了！おつかれ！', en: '🎉 Matched! Have fun!' },
+  pty_left: { ja: '👋 抜けたよ。', en: '👋 You left the party.' },
+  pty_host_cant_leave: {
+    ja: '⚠️ ホストは退出できないよ。解散するなら「✅マッチ完了」を押してね。',
+    en: '⚠️ The host can’t leave — tap ✅ Done to disband.',
+  },
+  pty_mine_none: { ja: '募集中のパーティはないよ。', en: 'You have no open recruits.' },
+  pty_mine_count: { ja: 'あなたの募集 {n}件:', en: 'Your recruits ({n}):' },
+  pty_disband: { ja: '#{id} を解散', en: 'Disband #{id}' },
+  pty_pick_ritual: { ja: '召喚したいキャラを選ぶ', en: 'Pick a character to summon' },
+  pty_ritual_intro: {
+    ja: '🔮 どのキャラの儀式？（持ち寄りで召喚するキャラを選んでね）',
+    en: '🔮 Which ritual? Pick the character to summon together.',
+  },
+  pty_no_ritual: {
+    ja: '⚠️ 儀式キャラのリストが読み込めなかった（図鑑を確認してね）。',
+    en: '⚠️ Couldn’t load the ritual character list (check the catalog).',
+  },
+
   // 運営
   panel_set: {
     ja: '✅ このチャンネルに操作パネルを設置したよ（出品はフィードへ流れる）。',

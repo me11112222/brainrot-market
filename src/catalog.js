@@ -39,6 +39,8 @@ const metaByName = new Map();
 let allNames = [];
 // 検索インデックス: [{name, keys:[正規化名, 正規化読み...]}]（全角/かな/記号ゆらぎを吸収）
 let searchIndex = [];
+// 儀式（Ritutal）で召喚できるキャラ一覧（how_to_get に ritu を含む）。儀式募集のピッカーに使う
+let ritualList = [];
 
 // 図鑑JSONを読み込んで索引を組み立てる。再読込にも使う（失敗時は旧データ維持で0を返す）
 function load() {
@@ -59,6 +61,7 @@ function load() {
   metaByName.clear();
   allNames = [];
   searchIndex = [];
+  ritualList = [];
   for (const c of chars) {
     if (!c?.name) continue;
     if (c.rarity === 'Missing') continue; // Missingはトレード不可＝非表示
@@ -84,6 +87,7 @@ function load() {
       name: c.name,
       keys: [norm(c.name), ...aliasList.map(norm)].filter(Boolean),
     });
+    if (/ritu/i.test(c.how_to_get || '')) ritualList.push(c.name);
   }
   return allNames.length;
 }
@@ -92,6 +96,11 @@ load();
 // 図鑑のホットリロード（/図鑑リロード用。再起動なしで新キャラ反映）
 export function reload() {
   return load();
+}
+
+// 儀式（Ritutal）で召喚できるキャラ名一覧（儀式募集のピッカー用）
+export function ritualNames() {
+  return ritualList.slice();
 }
 
 export function loaded() {

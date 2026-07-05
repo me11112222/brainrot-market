@@ -659,6 +659,139 @@ export function emojiCount() {
   return db.prepare(`SELECT COUNT(*) AS c FROM emojis`).get().c;
 }
 
+// ===== パーティ募集（⚔️ボス戦 / 🔮儀式）=====
+// 出品と同じ思想: 募集=DB行＋カード1枚、部屋=プライベートスレッド1本。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS parties (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind        TEXT    NOT NULL,          -- 'boss' | 'ritual'
+    host_id     TEXT    NOT NULL,
+    host_tag    TEXT,
+    host_avatar TEXT,
+    power       INTEGER,                   -- ホストの戦闘力
+    min_power   INTEGER,                   -- 参加条件（任意）
+    fn_id       TEXT,                      -- ホストのフォートナイトID（部屋にだけ出す）
+    character   TEXT,                      -- ritual: 召喚キャラ名
+    size        INTEGER NOT NULL DEFAULT 8,
+    note        TEXT,
+    status      TEXT    NOT NULL DEFAULT 'open',  -- open / full / closed / expired
+    channel_id  TEXT,
+    message_id  TEXT,
+    thread_id   TEXT,
+    created_at  INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_parties_status ON parties(status);
+  CREATE INDEX IF NOT EXISTS idx_parties_host   ON parties(host_id, status);
+  CREATE TABLE IF NOT EXISTS party_members (
+    party_id INTEGER NOT NULL,
+    user_id  TEXT    NOT NULL,
+    tag      TEXT,
+    power    INTEGER,
+    fn_id    TEXT,
+    joined_at INTEGER,
+    PRIMARY KEY (party_id, user_id)
+  );
+`);
+
+export function addParty({ kind, hostId, hostTag, hostAvatar, power, minPower, fnId, character, size, note }) {
+  const info = db
+    .prepare(
+      `INSERT INTO parties (kind, host_id, host_tag, host_avatar, power, min_power, fn_id, character, size, note, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      kind,
+      hostId,
+      hostTag || null,
+      hostAvatar || null,
+      power ?? null,
+      minPower ?? null,
+      fnId || null,
+      character || null,
+      size,
+      note || null,
+      Date.now(),
+    );
+  return Number(info.lastInsertRowid);
+}
+export function getParty(id) {
+  return db.prepare(`SELECT * FROM parties WHERE id=?`).get(id);
+}
+export function getPartyByThread(threadId) {
+  return db.prepare(`SELECT * FROM parties WHERE thread_id=?`).get(threadId);
+}
+export function setPartyStatus(id, status) {
+  db.prepare(`UPDATE parties SET status=? WHERE id=?`).run(status, id);
+}
+export function setPartyMessage(id, channelId, messageId) {
+  db.prepare(`UPDATE parties SET channel_id=?, message_id=? WHERE id=?`).run(
+    channelId,
+    messageId,
+    id,
+  );
+}
+export function setPartyThread(id, threadId) {
+  db.prepare(`UPDATE parties SET thread_id=? WHERE id=?`).run(threadId, id);
+}
+// ホストの進行中パーティ（1人1件/種別 の制限用）
+export function activePartyByHost(hostId, kind) {
+  return db
+    .prepare(
+      `SELECT * FROM parties WHERE host_id=? AND kind=? AND status IN ('open','full')
+       ORDER BY created_at DESC LIMIT 1`,
+    )
+    .get(hostId, kind);
+}
+export function activePartiesByHost(hostId) {
+  return db
+    .prepare(
+      `SELECT * FROM parties WHERE host_id=? AND status IN ('open','full') ORDER BY created_at DESC`,
+    )
+    .all(hostId);
+}
+export function addPartyMember(partyId, userId, tag, power, fnId) {
+  db.prepare(
+    `INSERT OR REPLACE INTO party_members (party_id, user_id, tag, power, fn_id, joined_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(partyId, userId, tag || null, power ?? null, fnId || null, Date.now());
+}
+export function removePartyMember(partyId, userId) {
+  db.prepare(`DELETE FROM party_members WHERE party_id=? AND user_id=?`).run(partyId, userId);
+}
+export function partyMembers(partyId) {
+  return db
+    .prepare(`SELECT * FROM party_members WHERE party_id=? ORDER BY joined_at`)
+    .all(partyId);
+}
+export function isPartyMember(partyId, userId) {
+  return !!db
+    .prepare(`SELECT 1 FROM party_members WHERE party_id=? AND user_id=?`)
+    .get(partyId, userId);
+}
+// 期限切れ募集を expired に（カード/スレッド掃除用に行を返す）
+export function expireParties(maxAgeMs) {
+  const cutoff = Date.now() - maxAgeMs;
+  const rows = db
+    .prepare(`SELECT * FROM parties WHERE status IN ('open','full') AND created_at < ?`)
+    .all(cutoff);
+  db.prepare(
+    `UPDATE parties SET status='expired' WHERE status IN ('open','full') AND created_at < ?`,
+  ).run(cutoff);
+  return rows;
+}
+// 古い closed/expired パーティ行の物理削除（メンバー行も道連れ）
+export function prunePartyRows(maxAgeMs) {
+  const cutoff = Date.now() - maxAgeMs;
+  db.prepare(
+    `DELETE FROM party_members WHERE party_id IN
+     (SELECT id FROM parties WHERE status IN ('closed','expired') AND created_at < ?)`,
+  ).run(cutoff);
+  const info = db
+    .prepare(`DELETE FROM parties WHERE status IN ('closed','expired') AND created_at < ?`)
+    .run(cutoff);
+  return Number(info.changes || 0);
+}
+
 // 図鑑などの名前を一括で辞書に取り込む（既存はスキップ）
 export function importItemNames(names) {
   const stmt = db.prepare(`INSERT OR IGNORE INTO items (name, uses) VALUES (?, 0)`);
