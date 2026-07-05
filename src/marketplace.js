@@ -307,6 +307,7 @@ async function startMatch(interaction, listing) {
       name: roomName(listing),
       type: ChannelType.PrivateThread,
       invitable: false,
+      autoArchiveDuration: 60, // Bot停止中の保険: Discord自身が無活動1hでアーカイブ＝枠を返す
       reason: 'マーケット取引 / marketplace trade',
     });
     await thread.members.add(listing.seller_id).catch(() => {});

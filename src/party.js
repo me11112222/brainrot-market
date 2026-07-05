@@ -350,6 +350,7 @@ async function ensurePartyThread(client, party) {
       name: threadName,
       type: ChannelType.PrivateThread,
       invitable: false,
+      autoArchiveDuration: 60, // Bot停止中の保険: Discord自身が無活動1hでアーカイブ＝枠を返す
       reason: 'パーティ募集 / party recruit',
     });
     await thread.members.add(party.host_id).catch(() => {});
