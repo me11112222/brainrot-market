@@ -749,6 +749,22 @@ export function touchParty(id) {
 export function touchPartyByThread(threadId) {
   db.prepare(`UPDATE parties SET last_active=? WHERE thread_id=?`).run(Date.now(), threadId);
 }
+// 参加受付中の募集一覧（🔍探す用）
+export function openParties(limit = 50) {
+  return db
+    .prepare(`SELECT * FROM parties WHERE status='open' ORDER BY created_at DESC LIMIT ?`)
+    .all(limit);
+}
+// 種別ごとの募集中件数（パネルのライブ表示用）
+export function countOpenPartiesByKind() {
+  const rows = db
+    .prepare(`SELECT kind, COUNT(*) AS c FROM parties WHERE status='open' GROUP BY kind`)
+    .all();
+  const out = {};
+  for (const r of rows) out[r.kind] = r.c;
+  return out;
+}
+
 // 部屋つきで一定時間動きのない募集（無人クローズ対象）
 export function idlePartiesWithThread(idleMs) {
   return db

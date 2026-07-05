@@ -54,16 +54,22 @@ export const partyCommands = [
     .toJSON(),
 ];
 
-// ===== パネル（共有・日英併記）=====
+// ===== パネル（共有・日英併記・募集中件数のライブ表示つき）=====
 export function buildPartyPanel() {
+  const counts = db.countOpenPartiesByKind();
+  const boss = counts.boss || 0;
+  const ritual = counts.ritual || 0;
   const embed = new EmbedBuilder()
     .setColor(0xfee75c)
     .setTitle('🎮 パーティ募集 / Party Finder')
     .setDescription(
       [
+        `**いま募集中 / Open now: ⚔️ ${boss}件 ・ 🔮 ${ritual}件**`,
+        '',
         '⚔️ **ボス戦募集 / Boss** … 8人で挑もう！毎週水曜はボスラッシュ！ / 8-player boss rush party',
         '🔮 **儀式募集 / Ritual** … キャラ持ち寄りで召喚 / bring characters, summon together',
-        '📋 **マイ募集 / Mine** … 自分の募集を確認・解散 / view & disband',
+        '🔍 **探す / Find** … 自分の戦闘力に近い募集をワンタップ表示 / parties near your power',
+        '📋 **マイ募集 / Mine** … 上げ直し・解散 / bump & disband',
         '',
         '流れ: 参加を押す → 部屋でフレンドID交換 → ゲームに集合！',
         'Flow: tap Join → swap Fortnite IDs in the room → meet in game!',
@@ -80,6 +86,11 @@ export function buildPartyPanel() {
       .setLabel('儀式募集 / Ritual')
       .setEmoji('🔮')
       .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId('pty_find')
+      .setLabel('探す / Find')
+      .setEmoji('🔍')
+      .setStyle(ButtonStyle.Success),
     new ButtonBuilder()
       .setCustomId('pty_mine')
       .setLabel('マイ募集 / Mine')
@@ -531,6 +542,98 @@ async function cleanupParty(client, party, threadMsg) {
   }
 }
 
+// ===== 🔍 探す（自分の戦闘力に近い順・埋まりかけ優先）=====
+async function replyFind(interaction) {
+  const lc = interaction.locale;
+  const uid = interaction.user.id;
+  const myPower = db.getProfile(uid)?.power || null;
+  let list = db.openParties(50).filter((p) => p.host_id !== uid);
+  // 条件未達（min_power > 自分の戦闘力）の募集は最初から見せない＝ガッカリを防ぐ
+  if (myPower) list = list.filter((p) => !p.min_power || myPower >= p.min_power);
+  const withCount = list.map((p) => ({ p, count: memberLines(p).count }));
+  withCount.sort((a, b) => {
+    if (myPower) {
+      const da = a.p.power ? Math.abs(a.p.power - myPower) : 1e9;
+      const dbb = b.p.power ? Math.abs(b.p.power - myPower) : 1e9;
+      if (da !== dbb) return da - dbb; // ①戦闘力が近い順
+    }
+    const ra = a.p.size - a.count;
+    const rb = b.p.size - b.count;
+    if (ra !== rb) return ra - rb; // ②あと少しで満員を優先
+    return b.p.created_at - a.p.created_at; // ③新しい順
+  });
+  const top = withCount.slice(0, 10);
+  if (!top.length) {
+    return interaction.reply({ content: t(lc, 'pty_find_none'), flags: MessageFlags.Ephemeral });
+  }
+  const lines = top.map(({ p, count }) => {
+    const k = KINDS[p.kind];
+    const bits = [`${k.emoji} **#${p.id}**`];
+    if (p.kind === 'ritual' && p.character) bits.push(`${emojiMention(p.character)}${p.character}`);
+    bits.push(`👑 ${p.host_tag || '?'}${p.power ? `　⚔️${p.power}` : ''}`);
+    bits.push(`👥 ${count}/${p.size}`);
+    if (p.min_power) bits.push(`🎯⚔️${p.min_power}〜`);
+    if (p.note) bits.push(`📝${String(p.note).slice(0, 20)}`);
+    return bits.join('　');
+  });
+  const sel = new StringSelectMenuBuilder()
+    .setCustomId('pty_pick_join')
+    .setPlaceholder(t(lc, 'pty_pick_join'))
+    .addOptions(
+      top.map(({ p, count }) => {
+        const k = KINDS[p.kind];
+        return {
+          label: `#${p.id} ${p.kind === 'ritual' && p.character ? p.character : `⚔️${p.power || '?'}`}　${count}/${p.size}`.slice(0, 100),
+          description: (p.note || p.host_tag || '').slice(0, 100),
+          value: String(p.id),
+          emoji: k.emoji,
+        };
+      }),
+    );
+  await interaction.reply({
+    content: myPower
+      ? t(lc, 'pty_find_header_p', { n: top.length, p: myPower })
+      : t(lc, 'pty_find_header', { n: top.length }),
+    embeds: [new EmbedBuilder().setColor(0xfee75c).setDescription(lines.join('\n'))],
+    components: [new ActionRowBuilder().addComponents(sel)],
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+// ===== ⬆️ 上げ直し（埋もれ対策: カードを消して最下部に再掲載。10分に1回）=====
+async function bumpParty(interaction, partyId) {
+  const lc = interaction.locale;
+  const party = db.getParty(partyId);
+  if (!party) {
+    return interaction.reply({ content: t(lc, 'pty_notfound'), flags: MessageFlags.Ephemeral });
+  }
+  if (party.host_id !== interaction.user.id) {
+    return interaction.reply({ content: t(lc, 'pty_host_only'), flags: MessageFlags.Ephemeral });
+  }
+  if (party.status !== 'open') {
+    return interaction.reply({ content: t(lc, 'pty_ended'), flags: MessageFlags.Ephemeral });
+  }
+  if (!rateOk('ptybump', interaction.user.id, 1, 10 * 60 * 1000)) {
+    return interaction.reply({ content: t(lc, 'pty_bump_rate'), flags: MessageFlags.Ephemeral });
+  }
+  const ch = await interaction.client.channels.fetch(party.channel_id).catch(() => null);
+  if (!ch) {
+    return interaction.reply({ content: t(lc, 'pty_notfound'), flags: MessageFlags.Ephemeral });
+  }
+  if (party.message_id) {
+    const old = await ch.messages.fetch(party.message_id).catch(() => null);
+    if (old) await old.delete().catch(() => {});
+  }
+  const msg = await ch.send({
+    embeds: [partyEmbed(party)],
+    components: [joinRow(party)],
+    allowedMentions: NO_PING,
+  });
+  db.setPartyMessage(partyId, msg.channelId, msg.id);
+  schedulePartyPanelRepost(ch);
+  await interaction.reply({ content: t(lc, 'pty_bumped'), flags: MessageFlags.Ephemeral });
+}
+
 // ===== マイ募集 =====
 async function replyMine(interaction) {
   const lc = interaction.locale;
@@ -543,6 +646,11 @@ async function replyMine(interaction) {
     embeds: mine.slice(0, 4).map((p) => partyEmbed(p)),
     components: mine.slice(0, 4).map((p) =>
       new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`pty_bump_${p.id}`)
+          .setLabel(t(lc, 'pty_bump', { id: p.id }))
+          .setEmoji('⬆️')
+          .setStyle(ButtonStyle.Primary),
         new ButtonBuilder()
           .setCustomId(`pty_done_${p.id}`)
           .setLabel(t(lc, 'pty_disband', { id: p.id }))
@@ -632,6 +740,14 @@ export async function handlePartyInteraction(interaction) {
       await replyMine(interaction);
       return true;
     }
+    if (id === 'pty_find') {
+      await replyFind(interaction);
+      return true;
+    }
+    if (id.startsWith('pty_bump_')) {
+      await bumpParty(interaction, Number(id.slice('pty_bump_'.length)));
+      return true;
+    }
     if (id.startsWith('pty_join_')) {
       await joinParty(interaction, Number(id.slice('pty_join_'.length)));
       return true;
@@ -645,6 +761,11 @@ export async function handlePartyInteraction(interaction) {
       return true;
     }
     return false;
+  }
+  if (interaction.isStringSelectMenu() && interaction.customId === 'pty_pick_join') {
+    // 🔍探すの結果から選択 → 参加チェック＆モーダル
+    await joinParty(interaction, Number(interaction.values[0]));
+    return true;
   }
   if (interaction.isStringSelectMenu() && interaction.customId === 'pty_ritsel') {
     // キャラ決定 → そのままモーダルへ（選択メニューの応答としてモーダルを出す）

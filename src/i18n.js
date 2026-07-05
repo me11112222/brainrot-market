@@ -282,8 +282,30 @@ const D = {
     en: '⚠️ The host can’t leave — tap ✅ Done to disband.',
   },
   pty_mine_none: { ja: '募集中のパーティはないよ。', en: 'You have no open recruits.' },
-  pty_mine_count: { ja: 'あなたの募集 {n}件:', en: 'Your recruits ({n}):' },
+  pty_mine_count: { ja: 'あなたの募集 {n}件:（⬆️で最下部に上げ直し＝埋もれ対策）', en: 'Your recruits ({n}): (⬆️ bumps the card to the bottom)' },
   pty_disband: { ja: '#{id} を解散', en: 'Disband #{id}' },
+  pty_bump: { ja: '#{id} を上へ', en: 'Bump #{id}' },
+  pty_bumped: {
+    ja: '⬆️ カードを最新の位置に上げ直したよ！',
+    en: '⬆️ Your recruit card was bumped to the bottom!',
+  },
+  pty_bump_rate: {
+    ja: '⚠️ 上げ直しは10分に1回までだよ。',
+    en: '⚠️ You can bump once every 10 minutes.',
+  },
+  pty_find_none: {
+    ja: '🔍 いま参加できる募集はないよ。「⚔️/🔮」ボタンで最初のホストになろう！',
+    en: '🔍 No open recruits right now — be the first host with ⚔️/🔮!',
+  },
+  pty_find_header_p: {
+    ja: '🔍 参加できる募集 {n}件（あなたの⚔️{p}に近い順・埋まりかけ優先）:',
+    en: '🔍 {n} open recruit(s), sorted by closeness to your ⚔️{p}:',
+  },
+  pty_find_header: {
+    ja: '🔍 参加できる募集 {n}件（埋まりかけ優先）:',
+    en: '🔍 {n} open recruit(s):',
+  },
+  pty_pick_join: { ja: '参加する募集を選ぶ', en: 'Pick a recruit to join' },
   pty_pick_ritual: { ja: '召喚したいキャラを選ぶ', en: 'Pick a character to summon' },
   pty_ritual_intro: {
     ja: '🔮 どのキャラの儀式？（持ち寄りで召喚するキャラを選んでね）',
