@@ -792,6 +792,28 @@ export function prunePartyRows(maxAgeMs) {
   return Number(info.changes || 0);
 }
 
+// プレイヤープロフィール（FN ID・戦闘力を記憶→次回のモーダルに自動入力＝入力の手間を削る）
+db.exec(`
+  CREATE TABLE IF NOT EXISTS player_profiles (
+    user_id    TEXT PRIMARY KEY,
+    fn_id      TEXT,
+    power      INTEGER,
+    updated_at INTEGER
+  );
+`);
+export function getProfile(userId) {
+  return db.prepare(`SELECT * FROM player_profiles WHERE user_id=?`).get(userId);
+}
+export function saveProfile(userId, fnId, power) {
+  db.prepare(
+    `INSERT INTO player_profiles (user_id, fn_id, power, updated_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(user_id) DO UPDATE SET
+       fn_id = COALESCE(excluded.fn_id, fn_id),
+       power = COALESCE(excluded.power, power),
+       updated_at = excluded.updated_at`,
+  ).run(userId, fnId || null, power ?? null, Date.now());
+}
+
 // 図鑑などの名前を一括で辞書に取り込む（既存はスキップ）
 export function importItemNames(names) {
   const stmt = db.prepare(`INSERT OR IGNORE INTO items (name, uses) VALUES (?, 0)`);

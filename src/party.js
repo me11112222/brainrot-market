@@ -156,13 +156,49 @@ const CONTROL_HINT_PTY =
   'Host: tap ✅ once the party sets off — leaving? tap 🚪';
 
 // ===== モーダル =====
+// 戦闘力の寛容パース: 全角（１４０００）・カンマ・スペース・「1.4万」「14k」全部OK
 function parsePower(s) {
-  const digits = String(s || '').replace(/[^\d]/g, '');
-  if (!digits) return null;
-  const n = Number(digits);
-  return Number.isFinite(n) && n > 0 ? Math.min(n, 999999) : null;
+  let v = String(s || '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[,\s，、．]/g, (c) => (c === '．' ? '.' : ''));
+  if (!v) return null;
+  let mult = 1;
+  if (/万$/.test(v)) {
+    mult = 10000;
+    v = v.slice(0, -1);
+  } else if (/k$/.test(v)) {
+    mult = 1000;
+    v = v.slice(0, -1);
+  }
+  const n = parseFloat(v.replace(/[^\d.]/g, ''));
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.min(Math.round(n * mult), 999999);
 }
-function newPartyModal(kind, character, lc) {
+// 入力欄（プレースホルダー＝薄字の記入例つき。profileがあれば前回の値を自動入力）
+function fnidInput(lc, profile) {
+  const i = new TextInputBuilder()
+    .setCustomId('fnid')
+    .setLabel(t(lc, 'pty_m_fnid'))
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setMaxLength(40)
+    .setPlaceholder(t(lc, 'pty_ph_fnid'));
+  if (profile?.fn_id) i.setValue(profile.fn_id);
+  return i;
+}
+function powerInput(lc, required, profile) {
+  const i = new TextInputBuilder()
+    .setCustomId('power')
+    .setLabel(t(lc, 'pty_m_power'))
+    .setStyle(TextInputStyle.Short)
+    .setRequired(required)
+    .setMaxLength(10)
+    .setPlaceholder(t(lc, 'pty_ph_power'));
+  if (profile?.power) i.setValue(String(profile.power));
+  return i;
+}
+function newPartyModal(kind, character, lc, profile) {
   // customId にキャラ名を埋め込む（セッション不要・再起動に強い）
   const m = new ModalBuilder()
     .setCustomId(`pty_newm|${kind}|${character || ''}`)
@@ -170,22 +206,8 @@ function newPartyModal(kind, character, lc) {
       kind === 'boss' ? t(lc, 'pty_new_boss_title') : t(lc, 'pty_new_ritual_title'),
     );
   m.addComponents(
-    new ActionRowBuilder().addComponents(
-      new TextInputBuilder()
-        .setCustomId('fnid')
-        .setLabel(t(lc, 'pty_m_fnid'))
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true)
-        .setMaxLength(40),
-    ),
-    new ActionRowBuilder().addComponents(
-      new TextInputBuilder()
-        .setCustomId('power')
-        .setLabel(t(lc, 'pty_m_power'))
-        .setStyle(TextInputStyle.Short)
-        .setRequired(kind === 'boss')
-        .setMaxLength(8),
-    ),
+    new ActionRowBuilder().addComponents(fnidInput(lc, profile)),
+    new ActionRowBuilder().addComponents(powerInput(lc, kind === 'boss', profile)),
   );
   if (kind === 'boss') {
     m.addComponents(
@@ -195,7 +217,8 @@ function newPartyModal(kind, character, lc) {
           .setLabel(t(lc, 'pty_m_minpower'))
           .setStyle(TextInputStyle.Short)
           .setRequired(false)
-          .setMaxLength(8),
+          .setMaxLength(10)
+          .setPlaceholder(t(lc, 'pty_ph_minpower')),
       ),
     );
   } else {
@@ -206,7 +229,8 @@ function newPartyModal(kind, character, lc) {
           .setLabel(t(lc, 'pty_m_size'))
           .setStyle(TextInputStyle.Short)
           .setRequired(false)
-          .setMaxLength(2),
+          .setMaxLength(2)
+          .setPlaceholder(t(lc, 'pty_ph_size')),
       ),
     );
   }
@@ -217,32 +241,19 @@ function newPartyModal(kind, character, lc) {
         .setLabel(t(lc, 'pty_m_note'))
         .setStyle(TextInputStyle.Short)
         .setRequired(false)
-        .setMaxLength(100),
+        .setMaxLength(100)
+        .setPlaceholder(t(lc, 'pty_ph_note')),
     ),
   );
   return m;
 }
-function joinModal(party, lc) {
+function joinModal(party, lc, profile) {
   return new ModalBuilder()
     .setCustomId(`pty_joinm_${party.id}`)
     .setTitle(t(lc, 'pty_join_title', { id: party.id }))
     .addComponents(
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId('fnid')
-          .setLabel(t(lc, 'pty_m_fnid'))
-          .setStyle(TextInputStyle.Short)
-          .setRequired(true)
-          .setMaxLength(40),
-      ),
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId('power')
-          .setLabel(t(lc, 'pty_m_power'))
-          .setStyle(TextInputStyle.Short)
-          .setRequired(party.kind === 'boss')
-          .setMaxLength(8),
-      ),
+      new ActionRowBuilder().addComponents(fnidInput(lc, profile)),
+      new ActionRowBuilder().addComponents(powerInput(lc, party.kind === 'boss', profile)),
     );
 }
 
@@ -285,6 +296,7 @@ async function createParty(interaction, kind, character) {
     return interaction.reply({ content: t(lc, 'cant_make_room'), flags: MessageFlags.Ephemeral });
   }
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  db.saveProfile(uid, fnid, power); // 次回のモーダルに自動入力
   const partyId = db.addParty({
     kind,
     hostId: uid,
@@ -378,7 +390,7 @@ async function joinParty(interaction, partyId) {
       flags: MessageFlags.Ephemeral,
     });
   }
-  await interaction.showModal(joinModal(party, lc));
+  await interaction.showModal(joinModal(party, lc, db.getProfile(uid)));
 }
 async function submitJoin(interaction, partyId) {
   const lc = interaction.locale;
@@ -413,6 +425,7 @@ async function submitJoin(interaction, partyId) {
   if (memberLines(party).count >= party.size || db.getParty(partyId)?.status !== 'open') {
     return interaction.editReply(t(lc, 'pty_full_ep'));
   }
+  db.saveProfile(uid, fnid, power); // 次回のモーダルに自動入力
   db.addPartyMember(partyId, uid, interaction.user.tag, power, fnid);
   const thread = party.thread_id
     ? await interaction.client.channels.fetch(party.thread_id).catch(() => null)
@@ -579,7 +592,9 @@ export async function handlePartyInteraction(interaction) {
         await interaction.reply({ content: t(interaction.locale, 'rl_listing'), flags: MessageFlags.Ephemeral });
         return true;
       }
-      await interaction.showModal(newPartyModal('boss', null, interaction.locale));
+      await interaction.showModal(
+        newPartyModal('boss', null, interaction.locale, db.getProfile(uid)),
+      );
       return true;
     }
     if (id === 'pty_new_ritual') {
@@ -612,7 +627,12 @@ export async function handlePartyInteraction(interaction) {
   if (interaction.isStringSelectMenu() && interaction.customId === 'pty_ritsel') {
     // キャラ決定 → そのままモーダルへ（選択メニューの応答としてモーダルを出す）
     await interaction.showModal(
-      newPartyModal('ritual', interaction.values[0], interaction.locale),
+      newPartyModal(
+        'ritual',
+        interaction.values[0],
+        interaction.locale,
+        db.getProfile(interaction.user.id),
+      ),
     );
     return true;
   }
