@@ -33,7 +33,8 @@ const WATCH_TTL = 14 * 24 * 60 * 60 * 1000; // 放置ウォッチは14日で自�
 const MATCH_DEDUP_TTL = 6 * 60 * 60 * 1000; // 同じ2人への💞マッチ通知は6hに1回まで
 const HOT_DEMAND_MIN = 3; // 🔥バッジ：直近7日の需要がこれ以上 かつ 供給の2倍以上
 const RELIST_STRIKE_MAX = 5; // 出品者の不在（自動再出品）がこの回数に達したら自動取り下げ
-const DONE_REMIND_EVERY = 5 * 60 * 1000; // 片方✅済みの間、押してない側へ5分ごとにリマインド
+const DONE_REMIND_EVERY = 50 * 1000; // 片方✅済みの間、押してない側へ毎分リマインド（掃除は60秒周期なので50秒判定＝毎回発火）
+const DONE_PENDING_MAX = 30 * 60 * 1000; // 確認待ちは最初の✅から30分まで。過ぎたら通常の無反応クローズに戻す
 // 取引ルームの常設注意（日英併記・ピン留め）。子供が読めるよう最小限に絞る
 const SCAM_NOTICE =
   '⚠️ 取引は**自己責任** / Trade at your own risk\n' +
@@ -390,7 +391,8 @@ async function handleDone(interaction, listingId) {
       return interaction.reply({ content: t(lc, 'done_already'), flags: MessageFlags.Ephemeral });
     }
     db.setRoomDoneSeller(listingId);
-    db.setRoomRemind(listingId, Date.now()); // いま告知するので次のリマインドは5分後から
+    db.setRoomDoneAt(listingId, Date.now()); // 確認待ち30分タイマーの起点
+    db.setRoomRemind(listingId, Date.now()); // いま告知するので次のリマインドは約1分後から
     const partners = db.getRoomMembers(listingId).filter((id) => id !== listing.seller_id);
     await interaction.reply({ content: t(lc, 'done_wait_partner'), flags: MessageFlags.Ephemeral });
     await interaction.channel
@@ -407,6 +409,7 @@ async function handleDone(interaction, listingId) {
       return interaction.reply({ content: t(lc, 'done_already'), flags: MessageFlags.Ephemeral });
     }
     db.setRoomDoneBuyer(listingId, uid);
+    db.setRoomDoneAt(listingId, Date.now()); // 確認待ち30分タイマーの起点
     db.setRoomRemind(listingId, Date.now());
     await interaction.reply({ content: t(lc, 'done_wait_partner'), flags: MessageFlags.Ephemeral });
     await interaction.channel
@@ -616,6 +619,7 @@ function buildNewsPayload() {
   const dem = db.topWants(5, DAY);
   const trades = db.tradesSince(DAY);
   const newListings = db.countListingsSince(DAY);
+  const totalActive = db.countActive();
   const fmt = (rows) =>
     rows.length
       ? rows.map((r, i) => `**${i + 1}.** ${emojiMention(r.name)} ${r.name} ×${r.c}`).join('\n')
@@ -624,8 +628,8 @@ function buildNewsPayload() {
     .setColor(COLOR)
     .setTitle('📰 デイリーマーケットニュース / Daily Market News')
     .setDescription(
-      `今日の新規出品 **${newListings}** 件・成立した取引 **${trades}** 件\n` +
-        `Today: **${newListings}** new listings, **${trades}** completed trades`,
+      `🛒 いまの出品総数 **${totalActive}** 件｜今日の新規 **${newListings}** 件・成立した取引 **${trades}** 件\n` +
+        `🛒 **${totalActive}** active listings｜today: **${newListings}** new, **${trades}** trades completed`,
     )
     .addFields(
       { name: '⬆️ よく出品されてる / Most listed', value: fmt(sup), inline: true },
@@ -1534,13 +1538,15 @@ async function sweepOnce(client) {
       const lastActive = r.last_active || r.created_at;
       const idle = now - lastActive;
       const age = now - r.created_at;
-      // 片方だけ✅済み（確認待ち）: 無反応クローズを保留し、押してない側に定期リマインド。
-      // 「取引したのに片方が押さない→カウントされない」を潰す。24h上限だけは生かす。
+      // 片方だけ✅済み（確認待ち）: 最初の✅から30分間は無反応クローズを保留し、
+      // 押してない側に毎分リマインド。30分過ぎたら通常の無反応クローズに戻す
+      // （出品者✅済み→取り下げ / 買い手のみ✅→出品者の不在ストライク）。
       const pending =
         listing &&
         listing.status === 'active' &&
         ((r.done_seller && !r.done_buyer_id) || (!r.done_seller && r.done_buyer_id));
-      if (pending && age < ROOM_HARD_MAX) {
+      const pendingFor = now - (r.done_at || r.created_at);
+      if (pending && pendingFor < DONE_PENDING_MAX && age < ROOM_HARD_MAX) {
         // 押してない側＝出品者 or 出品者以外のルーム参加者（退出済みは対象外＝再追加ピンで引き戻さない）
         const targets = !r.done_seller
           ? [listing.seller_id]
@@ -1548,11 +1554,12 @@ async function sweepOnce(client) {
         if (targets.length) {
           if (now - (r.done_remind_at || 0) >= DONE_REMIND_EVERY) {
             db.setRoomRemind(r.listing_id, now);
+            const deadline = Math.floor(((r.done_at || now) + DONE_PENDING_MAX) / 1000);
             await thread
               .send({
                 content:
-                  `⏰ ${targets.map((id) => `<@${id}>`).join(' ')} 「✅取引完了」を押してね！**2人とも押すと成立**（実績にカウント）だよ\n` +
-                  `⏰ Press ✅ Done! It only completes & counts when **BOTH** press!`,
+                  `⏰ ${targets.map((id) => `<@${id}>`).join(' ')} 「✅取引完了」を押してね！**2人とも押すと成立**（実績にカウント）。押されないと <t:${deadline}:R> に閉じるよ！\n` +
+                  `⏰ Press ✅ Done! It only counts when **BOTH** press — closing <t:${deadline}:R> otherwise!`,
                 allowedMentions: { users: targets.slice(0, 5) },
               })
               .catch(() => {});

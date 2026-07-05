@@ -234,6 +234,11 @@ export function countListingsSince(sinceMs) {
     .get(Date.now() - sinceMs).c;
 }
 
+// いまアクティブな出品の総数（デイリーニュース用）
+export function countActive() {
+  return db.prepare(`SELECT COUNT(*) AS c FROM listings WHERE status='active'`).get().c;
+}
+
 export function listByUser(userId) {
   return db
     .prepare(
@@ -366,6 +371,12 @@ try {
 } catch {
   /* 既にある */
 }
+// 最初の✅が押された時刻（確認待ちの30分タイムリミットの起点）
+try {
+  db.exec(`ALTER TABLE match_rooms ADD COLUMN done_at INTEGER`);
+} catch {
+  /* 既にある */
+}
 
 export function getRoom(listingId) {
   return db.prepare(`SELECT * FROM match_rooms WHERE listing_id=?`).get(listingId);
@@ -438,6 +449,12 @@ export function setRoomDoneSeller(listingId) {
 }
 export function setRoomRemind(listingId, ts) {
   db.prepare(`UPDATE match_rooms SET done_remind_at=? WHERE listing_id=?`).run(ts, listingId);
+}
+// 最初の✅時刻を記録（既に入っていたら上書きしない＝確認待ちの起点は最初の1回）
+export function setRoomDoneAt(listingId, ts) {
+  db.prepare(
+    `UPDATE match_rooms SET done_at=? WHERE listing_id=? AND done_at IS NULL`,
+  ).run(ts, listingId);
 }
 export function setRoomDoneBuyer(listingId, userId) {
   db.prepare(`UPDATE match_rooms SET done_buyer_id=? WHERE listing_id=?`).run(

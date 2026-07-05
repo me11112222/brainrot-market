@@ -209,8 +209,8 @@ const D = {
 
   // 両者✅（取引完了の相互確認）
   done_wait_partner: {
-    ja: '✅ OK！**相手も✅を押すと成立**（実績カウント）だよ。押してくれるまで数分おきにリマインドし続けるね。',
-    en: '✅ Got it! It completes & counts **when your partner also presses ✅** — I’ll keep reminding them every few minutes.',
+    ja: '✅ OK！**相手も✅を押すと成立**（実績カウント）だよ。30分間、毎分リマインドするね。押されなければ閉じるよ。',
+    en: '✅ Got it! It completes & counts **when your partner also presses ✅** — I’ll remind them every minute for 30 min, then the room closes.',
   },
   done_already: {
     ja: '⏳ もう✅済みだよ。相手の✅待ち！',
