@@ -103,6 +103,25 @@ systemctl list-timers | grep brainrot   # 次回実行時刻の確認
 復旧手順: `sudo systemctl stop brainrot-market && cp ~/backups/data-<曜日>.sqlite ~/brainrot-market/data.sqlite && sudo systemctl start brainrot-market`
 ※理想はさらに `rclone` 等でVM外（Google Drive/GCS）へ週1コピー。
 
+## 11. メモリ対策（必須・2026-07-22の窒息事故の教訓）
+e2-micro(RAM 958MB)にBot2本相乗り＋スワップ無しだと、夜間の unattended-upgrade（自動アップデート）が
+完走できずに積み重なり、メモリ枯渇→node死亡→systemdすら応答不能（Dステートのハング）になる。
+症状: Botオフライン・`systemctl status`が`Connection timed out`・`free -h`でavailable数十MB・Swap 0B。
+復旧: Dステートはkill不可 → **`sudo reboot` 一択**。再起動後に以下を適用:
+```bash
+# スワップ1GB（根本対策）
+sudo fallocate -l 1G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+# Botごとのメモリ上限（超過時はBotだけ自動再起動）
+sudo mkdir -p /etc/systemd/system/brainrot-market.service.d /etc/systemd/system/brainrot-bot.service.d
+printf '[Service]\nMemoryHigh=350M\nMemoryMax=450M\n' | sudo tee /etc/systemd/system/brainrot-market.service.d/memory.conf
+printf '[Service]\nMemoryHigh=250M\nMemoryMax=350M\n' | sudo tee /etc/systemd/system/brainrot-bot.service.d/memory.conf
+sudo systemctl daemon-reload && sudo systemctl restart brainrot-market brainrot-bot
+# GCP監視エージェント停止（〜100MB回収・任意）
+sudo systemctl disable --now google-cloud-ops-agent
+```
+定期チェック: `free -h`（Swap行があること）・`ps aux --sort=-%mem | head -5`。
+
 ## メモリ（e2-micro 1GB）
 - Python版 + Node版 の2本。Node側はメンバー非キャッシュ＋sweeper済みで軽量。
 - 逼迫したら `journalctl` で監視し、必要なら片方をスワップ運用 or インスタンス格上げ。

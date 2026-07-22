@@ -11,6 +11,9 @@ WorkingDirectory=/home/USER/brainrot-market
 ExecStart=/usr/bin/node src/index.js
 Restart=always
 RestartSec=5
+# メモリ暴走時はBotだけ再起動させ、1GB VMを道連れにしない（2026-07-22の窒息事故の教訓）
+MemoryHigh=350M
+MemoryMax=450M
 Environment=NODE_ENV=production
 # .env は WorkingDirectory から dotenv が自動読込（DISCORD_TOKEN/CLIENT_ID/GUILD_ID/CATALOG_PATH）
 
