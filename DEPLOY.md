@@ -93,13 +93,22 @@ DOTENV_CONFIG_PATH=./.env node scripts/upload-emojis.js 1456356183613898803
 ```bash
 cd ~/brainrot-market
 sudo cp deploy/brainrot-backup.service deploy/brainrot-backup.timer /etc/systemd/system/
-sudo nano /etc/systemd/system/brainrot-backup.service   # WorkingDirectory の USER を実ユーザー名に
+# USER の置換は手編集だと忘れる（2026-07-22に実際に忘れて3日間バックアップ0件）→ sedで確実に
+sudo sed -i "s#/home/USER/#/home/$USER/#; s#^User=USER#User=$USER#" /etc/systemd/system/brainrot-backup.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now brainrot-backup.timer
-# 動作確認（手動で1回実行）
+# ⚠️ 必須の検証（enableしただけで安心しない。ファイルが出来て初めて成功）
 sudo systemctl start brainrot-backup.service && ls -la ~/backups/
 systemctl list-timers | grep brainrot   # 次回実行時刻の確認
 ```
+
+**⚠️ timerが「動いてる」ことは成功を意味しない。** 必ず `ls ~/backups/` に `data-<曜日>.sqlite` が
+出ることを確認する。失敗の見分け方:
+```bash
+journalctl -u brainrot-backup.service -n 20 --no-pager
+```
+- `status=200/CHDIR` / `Changing to the requested working directory failed` → USER未置換（上のsedで修正）
+- `~/backups` が空なのにログが成功 → `User=` 未設定でrootで動き `/root/backups` に出ている（`sudo ls /root/backups/`）
 復旧手順: `sudo systemctl stop brainrot-market && cp ~/backups/data-<曜日>.sqlite ~/brainrot-market/data.sqlite && sudo systemctl start brainrot-market`
 ※理想はさらに `rclone` 等でVM外（Google Drive/GCS）へ週1コピー。
 

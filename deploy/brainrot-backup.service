@@ -3,7 +3,13 @@ Description=BrainrotBot Marketplace DB backup (daily, 7-day rotation)
 
 [Service]
 Type=oneshot
-# クローンした場所に合わせて変更（例: /home/USER/brainrot-market）
+# ⚠️ 下の USER を実ユーザー名に置換すること（忘れると status=200/CHDIR で毎回失敗し、
+#    timerは「成功」に見えるのにバックアップが1つも作られない。2026-07-22に実際に起きた）
+#    置換は sed 推奨:
+#      sudo sed -i 's#/home/USER/#/home/<実ユーザー名>/#' /etc/systemd/system/brainrot-backup.service
+#      sudo sed -i 's#^User=USER#User=<実ユーザー名>#'   /etc/systemd/system/brainrot-backup.service
+User=USER
 WorkingDirectory=/home/USER/brainrot-market
-# 出力先は $HOME/backups（第2引数で変更可）
+# 出力先は User の $HOME/backups（＝/home/<ユーザー>/backups。第2引数で変更可）
+# User= を書かないとrootで動き /root/backups に出るので注意
 ExecStart=/usr/bin/node scripts/backup-db.js
