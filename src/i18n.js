@@ -109,6 +109,11 @@ const D = {
     ja: '⚠️ 出品者は退出できないよ。終わったら「✅取引完了」を押してね。',
     en: '⚠️ The seller can’t leave. Press “✅ Done” when finished.',
   },
+  // 出品者が退出＝取引ナシ。部屋は解散するが出品はリストに残る
+  seller_left_room: {
+    ja: '🚪 抜けたよ。この部屋は閉じるね（出品はリストに残ってるから、また誰か来たら取引できるよ）。',
+    en: '🚪 You left — closing this room. Your listing stays in the feed for other buyers.',
+  },
   relisted: {
     ja: '🔁 同じ条件で再出品したよ！（#{id}）出品リストの最新に出たよ。',
     en: '🔁 Re-listed with the same details! (#{id}) It’s now at the top of the feed.',

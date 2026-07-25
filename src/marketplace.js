@@ -45,6 +45,10 @@ const SCAM_NOTICE =
 const CONTROL_HINT =
   '👇 終わったら**2人とも**「✅取引完了」（両方押すと実績にカウント）・間違えたら「🚪退出」\n' +
   '**BOTH** press ✅ Done when finished (counts for both) — wrong room? 🚪 Leave';
+// 出品者が退出＝この取引はナシ。部屋を解散する時に流すお知らせ
+const SELLER_LEFT_NOTICE =
+  '🚪 出品者がこの取引から抜けたので、この部屋は閉じるね（出品はリストに残ってるよ）\n' +
+  'The seller left this trade — closing this room. The listing stays in the feed.';
 // 取引ルーム同時生成のレース防止（単一プロセス内ロック）
 const creatingRooms = new Set();
 // 荒らし対策のしきい値
@@ -1346,8 +1350,16 @@ export async function handleMarketplaceInteraction(interaction) {
 async function leaveRoom(interaction, listingId) {
   const lc = interaction.locale;
   const listing = db.getListing(listingId);
+  // 出品者が抜ける＝この取引はナシ → 部屋を解散する。
+  // 出品自体はリストに残す（他の人が取引できる）／自分で抜けたので不在ストライクは付けない。
   if (listing && listing.seller_id === interaction.user.id) {
-    await interaction.reply({ content: t(lc, 'seller_cant_leave'), flags: MessageFlags.Ephemeral });
+    const thread = interaction.channel;
+    await interaction.reply({ content: t(lc, 'seller_left_room'), flags: MessageFlags.Ephemeral });
+    db.deleteRoom(listingId);
+    if (thread?.isThread?.()) {
+      await thread.send(SELLER_LEFT_NOTICE).catch(() => {});
+      setTimeout(() => thread.delete().catch(() => {}), 5000);
+    }
     return;
   }
   try {
