@@ -140,7 +140,11 @@ const D = {
     ja: '🎟️ エントリー完了！（現在 {n}人）結果発表を待ってね🍀',
     en: '🎟️ You’re in! ({n} entries) Good luck 🍀',
   },
-  gw_cancelled: { ja: '🛑 抽選 #{id} を中止したよ。', en: '🛑 Giveaway #{id} cancelled.' },
+  gw_ended: {
+    ja: '🎬 抽選 #{id} を締め切ったよ！いま抽選して発表するね。',
+    en: '🎬 Giveaway #{id} closed — drawing and announcing now.',
+  },
+  gw_cancelled: { ja: '🛑 抽選 #{id} を中止したよ（当選者なし）。', en: '🛑 Giveaway #{id} cancelled (no winner).' },
 
   // 出品者が退出＝取引ナシ。部屋は解散するが出品はリストに残る
   seller_left_room: {

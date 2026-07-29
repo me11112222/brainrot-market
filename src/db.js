@@ -912,6 +912,10 @@ export function setGiveawayMessage(id, channelId, messageId) {
     channelId, messageId, id,
   );
 }
+// 締切を前倒し（/抽選終了 で「今すぐ締め切る」時に使う）
+export function setGiveawayEndsAt(id, ts) {
+  db.prepare(`UPDATE giveaways SET ends_at=? WHERE id=?`).run(ts, id);
+}
 export function setGiveawayStatus(id, status) {
   db.prepare(`UPDATE giveaways SET status=?, drawn_at=? WHERE id=?`).run(
     status, Date.now(), id,

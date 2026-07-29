@@ -54,8 +54,16 @@ export const giveawayCommands = [
     )
     .toJSON(),
   new SlashCommandBuilder()
+    .setName('抽選終了')
+    .setDescription('【運営用】締切を待たず今すぐ締め切って抽選＆発表する')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addIntegerOption((o) =>
+      o.setName('番号').setDescription('カード下部の「抽選 #番号」').setRequired(true),
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
     .setName('抽選中止')
-    .setDescription('【運営用】まだ締切前の抽選を中止する')
+    .setDescription('【運営用】抽選せずに中止する（当選者なし）')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .addIntegerOption((o) =>
       o.setName('番号').setDescription('カード下部の「抽選 #番号」').setRequired(true),
@@ -340,7 +348,22 @@ function pickWinners(list, n) {
   return a.slice(0, k);
 }
 
-async function drawGiveaway(client, g) {
+// 二重抽選ガード：締切ループと /抽選終了 が同時に走っても1回しか引かない
+const drawing = new Set();
+async function drawGiveaway(client, gArg) {
+  const id = gArg.id;
+  if (drawing.has(id)) return;
+  drawing.add(id);
+  try {
+    const g = db.getGiveaway(id);
+    if (!g || g.status !== 'open') return; // 既に抽選済み/中止済みなら何もしない
+    await doDraw(client, g);
+  } finally {
+    drawing.delete(id);
+  }
+}
+
+async function doDraw(client, g) {
   const entries = db.allGiveawayEntries(g.id);
   const winners = pickWinners(entries, g.winners);
   for (const w of winners) db.addGiveawayWinner(g.id, w.user_id, w.user_tag);
@@ -391,6 +414,22 @@ async function drawGiveaway(client, g) {
   }
 }
 
+// ===== 今すぐ終了（締切を待たずに抽選＆発表）=====
+async function endGiveawayNow(interaction, id) {
+  const lc = interaction.locale;
+  const g = db.getGiveaway(id);
+  if (!g) {
+    return interaction.reply({ content: t(lc, 'gw_not_found'), flags: MessageFlags.Ephemeral });
+  }
+  if (g.status !== 'open') {
+    return interaction.reply({ content: t(lc, 'gw_closed'), flags: MessageFlags.Ephemeral });
+  }
+  // 先に返事（抽選＋発表は数秒かかるのでインタラクションを待たせない）
+  await interaction.reply({ content: t(lc, 'gw_ended', { id }), flags: MessageFlags.Ephemeral });
+  db.setGiveawayEndsAt(id, Date.now()); // カードの締切表示を「今」に合わせる
+  await drawGiveaway(interaction.client, g);
+}
+
 // ===== 中止 =====
 async function cancelGiveaway(interaction, id) {
   const lc = interaction.locale;
@@ -412,6 +451,10 @@ export async function handleGiveawayInteraction(interaction) {
     if (interaction.commandName === '抽選作成') {
       const minDays = interaction.options.getInteger('最低アカウント日数') ?? 0;
       await interaction.showModal(createModal(minDays));
+      return true;
+    }
+    if (interaction.commandName === '抽選終了') {
+      await endGiveawayNow(interaction, interaction.options.getInteger('番号'));
       return true;
     }
     if (interaction.commandName === '抽選中止') {
