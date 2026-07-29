@@ -39,6 +39,8 @@ const metaByName = new Map();
 let allNames = [];
 // 検索インデックス: [{name, keys:[正規化名, 正規化読み...]}]（全角/かな/記号ゆらぎを吸収）
 let searchIndex = [];
+// 全キャラ索引（Missing・未分類も含む）。トレード対象外でも「抽選の賞品」には指定したいので別に持つ
+let anyIndex = [];
 // 儀式（Ritutal）で召喚できるキャラ一覧（how_to_get に ritu を含む）。儀式募集のピッカーに使う
 let ritualList = [];
 
@@ -61,10 +63,21 @@ function load() {
   metaByName.clear();
   allNames = [];
   searchIndex = [];
+  anyIndex = [];
   ritualList = [];
   for (const c of chars) {
     if (!c?.name) continue;
-    if (c.rarity === 'Missing') continue; // Missingはトレード不可＝非表示
+    // 全キャラ索引はここで作る（Missing・未分類も入れる＝賞品指定用）
+    {
+      const aa = ALIASES[c.name];
+      const al = Array.isArray(aa) ? aa : aa ? [aa] : [];
+      anyIndex.push({
+        name: c.name,
+        keys: [norm(c.name), ...al.map(norm)].filter(Boolean),
+        char: c,
+      });
+    }
+    if (c.rarity === 'Missing') continue; // Missingはトレード不可＝マーケットには出さない
     const g = GROUPS.find((x) => x.rarities.includes(c.rarity));
     if (!g) continue; // どのカテゴリにも属さないものは出さない
     allNames.push(c.name);
@@ -172,6 +185,47 @@ export function suggestNames(query, limit = 25) {
     .sort((a, b) => b[1] - a[1])
     .map((x) => x[0]);
   return [...subs, ...fuzzy].slice(0, limit);
+}
+// 賞品指定用の検索：Missing・未分類も含む全キャラから探す。
+// あいまい一致はあえて使わない（全然違うキャラの画像が出る事故を防ぐ）。見つからなければ null。
+export function findAny(query) {
+  const nq = norm(query);
+  if (!nq) return null;
+  const tokens = String(query)
+    .split(/[\s　]+/)
+    .map(norm)
+    .filter(Boolean);
+  const byKey = (fn) => anyIndex.find((e) => e.keys.some(fn));
+  // 部分一致は3文字以上でのみ許可（「の」1文字がエイリアスに刺さる等の誤爆を防ぐ）。
+  // 完全一致は「67」のような短い名前があるので長さ制限しない。
+  let hit =
+    byKey((k) => k === nq) || // 完全一致
+    (nq.length >= 3 ? byKey((k) => k.includes(nq)) : null) || // 入力が名前の一部
+    (nq.length >= 4 ? byKey((k) => nq.includes(k) && k.length >= 4) : null); // 名前＋余計な語
+  if (!hit && tokens.length > 1) hit = byKey((k) => tokens.every((t) => k.includes(t)));
+  if (!hit) {
+    // 「StrawberryElephant ★5」のような装飾付き、
+    // 「strawberryエレファント」のような英字＋カナの混在入力にも対応するため、
+    // 空白だけでなく文字種の切れ目でも分割して語ごとに照合する
+    const parts = new Set();
+    for (const t of tokens) {
+      parts.add(t);
+      for (const run of t.match(/[a-z0-9]+|[ァ-ヴ]+|[一-龠]+/g) || []) parts.add(run);
+    }
+    for (const t of parts) {
+      if (t.length < 3) continue; // 「★5」等の短い語で誤爆させない
+      hit = byKey((k) => k === t) || byKey((k) => k.includes(t));
+      if (hit) break;
+    }
+  }
+  return hit ? hit.char : null;
+}
+// 生のキャラデータから画像URLを作る（Missingでも使える）
+export function imageOf(char, skinKey) {
+  if (!char) return null;
+  const s = char.skins || {};
+  const file = (skinKey && s[skinKey]) || char.image || s.Default;
+  return file ? CDN + file : null;
 }
 export function categoryOf(name) {
   for (const [label, arr] of byCategory) if (arr.includes(name)) return label;

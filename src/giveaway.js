@@ -81,20 +81,10 @@ export const giveawayCommands = [
 
 // ===== 賞品の解決（図鑑にあれば画像とステータスを自動で付ける）=====
 function resolvePrize(input) {
-  const tokens = input.split(/[\s　]+/).filter(Boolean);
-  // 正規化＋カタカナエイリアス込みの検索。全語AND扱いなので、まず全文→ダメなら語ごとに試す
-  let hit = catalog.searchNames(input, 1)[0] || null;
-  if (!hit) {
-    for (const tk of tokens) {
-      const h = catalog.searchNames(tk, 1)[0];
-      if (h) {
-        hit = h;
-        break;
-      }
-    }
-  }
-  if (!hit) hit = catalog.suggestNames(tokens[0] || input, 1)[0] || null; // あいまい一致で最後の救済
-  if (!hit) return { name: null, img: null };
+  // Missing（入手不可＝激レア）も含む全キャラから探す。あいまい一致はしないので、
+  // 見つからなければ「画像なし」で正直に返す（全然違うキャラの絵が出るより遥かにマシ）
+  const char = catalog.findAny(input);
+  if (!char) return { name: null, img: null };
   const low = input.toLowerCase();
   let skin = 'Default';
   for (const [key, words] of Object.entries(SKIN_WORDS)) {
@@ -103,18 +93,19 @@ function resolvePrize(input) {
       break;
     }
   }
-  const keys = catalog.skinKeys(hit);
-  if (skin !== 'Default' && !keys.includes(skin)) skin = 'Default';
-  return { name: hit, img: catalog.skinImage(hit, skin) };
+  const skins = char.skins || {};
+  if (skin !== 'Default' && !skins[skin]) skin = 'Default'; // その変異の画像が無ければ通常版へ
+  return { name: char.name, img: catalog.imageOf(char, skin) };
 }
 
 function prizeStats(name) {
-  const m = name ? catalog.metaOf(name) : null;
-  if (!m) return null;
+  const c = name ? catalog.findAny(name) : null;
+  if (!c) return null;
   const parts = [];
-  if (m.attack != null) parts.push(`⚔️ ${m.attack}（★5→${Math.floor(m.attack * 2.8)}）`);
-  if (m.rarity) parts.push(`💎 ${m.rarity}`);
-  if (m.production) parts.push(`🏭 ${m.production}`);
+  const atk = Number(c.attack);
+  if (Number.isFinite(atk)) parts.push(`⚔️ ${atk}（★5→${Math.floor(atk * 2.8)}）`);
+  if (c.rarity && c.rarity !== 'Missing') parts.push(`💎 ${c.rarity}`);
+  if (c.production) parts.push(`🏭 ${c.production}`);
   return parts.length ? parts.join('　') : null;
 }
 
