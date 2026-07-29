@@ -694,9 +694,12 @@ export async function handlePartyInteraction(interaction) {
   // 運営: パネル設置
   if (interaction.isChatInputCommand() && interaction.commandName === '募集パネル設置') {
     // マーケットのパネル/フィードと同じチャンネルはNG（スティッキー同士が最下部を取り合って無限貼り直しになる）
-    const marketCh = db.getSetting('panel_channel_id');
-    const feedCh = db.getSetting('feed_channel_id');
-    if (interaction.channelId === marketCh || interaction.channelId === feedCh) {
+    const cid = interaction.channelId;
+    if (
+      db.isMarketPanelChannel(cid) ||
+      db.isMarketFeedChannel(cid) ||
+      cid === db.getSetting('feed_channel_id')
+    ) {
       await interaction.reply({
         content: '⚠️ マーケットのパネル/フィードと同じチャンネルには置けないよ。専用チャンネルで実行してね。',
         flags: MessageFlags.Ephemeral,
@@ -704,8 +707,7 @@ export async function handlePartyInteraction(interaction) {
       return true;
     }
     const msg = await interaction.channel.send(buildPartyPanel());
-    db.setSetting('party_panel_channel_id', msg.channelId);
-    db.setSetting('party_panel_message_id', msg.id);
+    db.upsertPartyPanel(msg.channelId, msg.id); // 言語ごとに複数設置できる
     await interaction.reply({ content: t(interaction.locale, 'pty_panel_set'), flags: MessageFlags.Ephemeral });
     return true;
   }
@@ -804,21 +806,21 @@ function schedulePartyPanelRepost(channel) {
 }
 async function repostPartyPanel(channel) {
   try {
-    const oldId = db.getSetting('party_panel_message_id');
+    const p = db.getPartyPanel(channel.id);
+    const oldId = p ? p.message_id : null;
     if (oldId) {
       const old = await channel.messages.fetch(oldId).catch(() => null);
       if (old) await old.delete().catch(() => {});
     }
     const msg = await channel.send(buildPartyPanel());
-    db.setSetting('party_panel_message_id', msg.id);
+    db.upsertPartyPanel(channel.id, msg.id);
   } catch (e) {
     console.error('募集パネル貼り直し失敗:', e);
   }
 }
 export function maybeRepostPartySticky(message) {
   if (message.author?.bot) return;
-  const chId = db.getSetting('party_panel_channel_id');
-  if (chId && message.channelId === chId) schedulePartyPanelRepost(message.channel);
+  if (db.isPartyPanelChannel(message.channelId)) schedulePartyPanelRepost(message.channel);
 }
 const threadStickyTimers = new Map();
 export function maybeRepostPartyControl(message) {
@@ -879,21 +881,19 @@ async function sweepParties(client) {
   db.prunePartyRows(7 * 24 * 60 * 60 * 1000);
   // パネルを常に最下部へ
   try {
-    const pch = db.getSetting('party_panel_channel_id');
-    const pmid = db.getSetting('party_panel_message_id');
-    if (pch) {
-      const channel = await client.channels.fetch(pch).catch(() => null);
-      if (channel) {
-        const last = await channel.messages.fetch({ limit: 1 }).catch(() => null);
-        const lastId = last && last.first() ? last.first().id : null;
-        if (lastId && lastId !== pmid) {
-          if (pmid) {
-            const old = await channel.messages.fetch(pmid).catch(() => null);
-            if (old) await old.delete().catch(() => {});
-          }
-          const msg = await channel.send(buildPartyPanel());
-          db.setSetting('party_panel_message_id', msg.id);
+    // 設置されている全パネル（日本語版・英語版…）をそれぞれ最下部に保つ
+    for (const p of db.allPartyPanels()) {
+      const channel = await client.channels.fetch(p.channel_id).catch(() => null);
+      if (!channel) continue;
+      const last = await channel.messages.fetch({ limit: 1 }).catch(() => null);
+      const lastId = last && last.first() ? last.first().id : null;
+      if (lastId && lastId !== p.message_id) {
+        if (p.message_id) {
+          const old = await channel.messages.fetch(p.message_id).catch(() => null);
+          if (old) await old.delete().catch(() => {});
         }
+        const msg = await channel.send(buildPartyPanel());
+        db.setPartyPanelMessage(p.channel_id, msg.id);
       }
     }
   } catch (e) {

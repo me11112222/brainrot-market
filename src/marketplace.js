@@ -95,8 +95,14 @@ function statsLine(name) {
 export const marketplaceCommands = [
   new SlashCommandBuilder()
     .setName('パネル設置')
-    .setDescription('【運営用】このチャンネルに操作パネルを設置（出品/探す/マイ出品/ランキング）')
+    .setDescription('【運営用】このチャンネルに操作パネルを設置（言語ごとに複数設置OK）')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addChannelOption((o) =>
+      o
+        .setName('フィード')
+        .setDescription('このパネルからの出品カードを流すチャンネル（省略時は既定のフィード）')
+        .addChannelTypes(ChannelType.GuildText),
+    )
     .toJSON(),
   new SlashCommandBuilder()
     .setName('フィード設置')
@@ -253,6 +259,22 @@ function roomName(listing) {
   return `🤝${listing.give_item}`.slice(0, 90);
 }
 
+// パネル→フィードの解決。パネル固有の設定 → 既定フィード の順（日本語版/英語版で別フィードにできる）
+function feedIdFor(panelChannelId) {
+  const p = panelChannelId ? db.getMarketPanel(panelChannelId) : null;
+  return p?.feed_channel_id || db.getSetting('feed_channel_id') || null;
+}
+// その出品のカードが載っているチャンネル（＝出品者が使った言語のフィード）を優先して返す。
+// 取引ルーム・再出品・各種告知を「元と同じ場所」に出すために使う。
+async function channelForListing(client, listing) {
+  if (listing?.channel_id) {
+    const ch = await client.channels.fetch(listing.channel_id).catch(() => null);
+    if (ch) return ch;
+  }
+  const fid = db.getSetting('feed_channel_id');
+  return fid ? await client.channels.fetch(fid).catch(() => null) : null;
+}
+
 async function startMatch(interaction, listing) {
   const lc = interaction.locale;
   const user = interaction.user;
@@ -274,10 +296,9 @@ async function startMatch(interaction, listing) {
   if (listing.seller_id === user.id) {
     return interaction.reply({ content: t(lc, 'own_listing'), flags: MessageFlags.Ephemeral });
   }
-  // 取引ルームは「出品リスト(フィード)」側に作る → 操作チャンネルにスレッドが立たず、パネルが流れない
-  let parent = null;
-  const feedId = db.getSetting('feed_channel_id');
-  if (feedId) parent = await interaction.client.channels.fetch(feedId).catch(() => null);
+  // 取引ルームは「そのカードが載っているフィード」側に作る
+  // → 操作チャンネルにスレッドが立たない＝パネルが流れない。日本語版/英語版それぞれの場所に立つ。
+  let parent = await channelForListing(interaction.client, listing);
   if (!parent) {
     parent = interaction.channel;
     if (parent?.isThread()) parent = parent.parent;
@@ -941,6 +962,7 @@ async function startPicker(interaction, mode = 'sell') {
     rarity: null,
     page: 0,
     ts: Date.now(),
+    panelCh: interaction.channelId, // どの言語のパネルから来たか＝カードを流すフィードの決定に使う
   });
   await interaction.reply({
     ...rarityView(interaction.locale, mode),
@@ -964,9 +986,9 @@ async function finalizePicker(interaction, s) {
   db.setListingImages(listingId, giveImg, null);
   db.recordItem(s.candidate);
   const listing = db.getListing(listingId);
-  // 出品カードはフィードチャンネルへ（未設定なら現在のチャンネル）。
-  // → 操作チャンネルは静かなまま＝出品/探すボタンが流れず常に押せる。
-  const feedId = db.getSetting('feed_channel_id');
+  // 出品カードは「押されたパネルに紐づくフィード」へ（未設定なら現在のチャンネル）。
+  // → 操作チャンネルは静かなまま＝出品/探すボタンが流れず常に押せる。言語ごとのフィードに振り分く。
+  const feedId = feedIdFor(s.panelCh);
   let target = interaction.channel;
   if (feedId && feedId !== interaction.channelId) {
     const f = await interaction.client.channels.fetch(feedId).catch(() => null);
@@ -988,7 +1010,7 @@ async function finalizePicker(interaction, s) {
   }
   db.setListingMessage(listingId, msg.channelId, msg.id);
   // 旧・単一チャンネル運用の時だけパネルを貼り直す（フィード分離時は不要）
-  if (!feedId && db.getSetting('panel_channel_id') === msg.channelId) {
+  if (!feedId && db.isMarketPanelChannel(msg.channelId)) {
     scheduleRepostPanel(interaction.channel);
   }
   await interaction.update({
@@ -1007,8 +1029,7 @@ async function finalizePicker(interaction, s) {
 const notifiedPairs = new Map(); // `sellerA:sellerB`（ソート済）→ 最終通知時刻
 async function afterListingPosted(client, listing) {
   if (!listing || listing.status !== 'active') return;
-  const feedId = db.getSetting('feed_channel_id');
-  const ch = feedId ? await client.channels.fetch(feedId).catch(() => null) : null;
+  const ch = await channelForListing(client, listing); // その出品が載ったフィードで通知する
   if (!ch) return;
   // 📌 ウォッチャーに入荷通知（1回きり＝通知後に登録解除）
   if (listing.give_name) {
@@ -1238,11 +1259,16 @@ export async function handleMarketplaceInteraction(interaction) {
 
   if (interaction.isChatInputCommand()) {
     if (interaction.commandName === 'パネル設置') {
+      // 言語ごとに複数設置できる。フィード未指定なら「このパネルの既存設定 → 既定フィード」を引き継ぐ
+      const opt = interaction.options.getChannel('フィード');
+      const cur = db.getMarketPanel(interaction.channelId);
+      const feedId = opt?.id || cur?.feed_channel_id || db.getSetting('feed_channel_id') || null;
       const msg = await interaction.channel.send(buildPanel());
-      db.setSetting('panel_channel_id', msg.channelId);
-      db.setSetting('panel_message_id', msg.id);
+      db.upsertMarketPanel(msg.channelId, msg.id, feedId);
       await interaction.reply({
-        content: t(interaction.locale, 'panel_set'),
+        content:
+          t(interaction.locale, 'panel_set') +
+          (feedId ? `\n📋 出品カードの流し先: <#${feedId}>` : '\n⚠️ フィード未設定：先に流したいチャンネルで `/フィード設置` を実行してね'),
         flags: MessageFlags.Ephemeral,
       });
       return true;
@@ -1377,8 +1403,8 @@ async function leaveRoom(interaction, listingId) {
 // 再出品の中核（自動/手動 共用）：元を失効＋古いカード削除＋同条件で新カードをフィード最新に出す。
 // 自動(ping=true)は不在ストライク+1を引き継ぐ。手動＝出品者の生存確認なので0にリセット。
 async function doRelist(client, old, ping = false) {
-  const feedId = db.getSetting('feed_channel_id');
-  const ch = feedId ? await client.channels.fetch(feedId).catch(() => null) : null;
+  // 元のカードが載っていたフィードに出し直す（日本語版の出品は日本語版フィードへ戻る）
+  const ch = await channelForListing(client, old);
   if (!ch) return null;
   db.setStatus(old.id, 'expired');
   if (old.channel_id && old.message_id) {
@@ -1472,8 +1498,7 @@ async function notifyRoomClosed(client, room) {
           `🗑️ “**${item}**” was removed after ${RELIST_STRIKE_MAX} no-shows. Re-post from 🟢 Post if you still want to trade.`;
         withRelistBtn = true; // ワンタップで復活できる導線は残す（押した時点で生存確認＝ストライク0）
         // フィードにも告知（DM拒否勢に届ける＆「逃げたら消える」ルールの周知）
-        const feedId = db.getSetting('feed_channel_id');
-        const feed = feedId ? await client.channels.fetch(feedId).catch(() => null) : null;
+        const feed = await channelForListing(client, listing);
         await feed
           ?.send({
             content:
@@ -1638,21 +1663,19 @@ async function sweepOnce(client) {
     }
     // パネルを常に最下部に保つ（操作チャンネルで最後のメッセージがパネルでなければ貼り直す）
     try {
-      const pch = db.getSetting('panel_channel_id');
-      const pmid = db.getSetting('panel_message_id');
-      if (pch) {
-        const channel = await client.channels.fetch(pch).catch(() => null);
-        if (channel) {
-          const last = await channel.messages.fetch({ limit: 1 }).catch(() => null);
-          const lastId = last && last.first() ? last.first().id : null;
-          if (lastId && lastId !== pmid) {
-            if (pmid) {
-              const old = await channel.messages.fetch(pmid).catch(() => null);
-              if (old) await old.delete().catch(() => {});
-            }
-            const msg = await channel.send(buildPanel());
-            db.setSetting('panel_message_id', msg.id);
+      // 設置されている全パネル（日本語版・英語版…）をそれぞれ最下部に保つ
+      for (const p of db.allMarketPanels()) {
+        const channel = await client.channels.fetch(p.channel_id).catch(() => null);
+        if (!channel) continue;
+        const last = await channel.messages.fetch({ limit: 1 }).catch(() => null);
+        const lastId = last && last.first() ? last.first().id : null;
+        if (lastId && lastId !== p.message_id) {
+          if (p.message_id) {
+            const old = await channel.messages.fetch(p.message_id).catch(() => null);
+            if (old) await old.delete().catch(() => {});
           }
+          const msg = await channel.send(buildPanel());
+          db.setMarketPanelMessage(p.channel_id, msg.id);
         }
       }
     } catch (e) {
@@ -1691,18 +1714,18 @@ function scheduleRepostPanel(channel) {
 }
 export function maybeRepostSticky(message) {
   if (message.author?.bot) return;
-  const chId = db.getSetting('panel_channel_id');
-  if (chId && message.channelId === chId) scheduleRepostPanel(message.channel);
+  if (db.isMarketPanelChannel(message.channelId)) scheduleRepostPanel(message.channel);
 }
 async function repostPanel(channel) {
   try {
-    const oldId = db.getSetting('panel_message_id');
-    if (oldId) {
-      const old = await channel.messages.fetch(oldId).catch(() => null);
+    const p = db.getMarketPanel(channel.id);
+    if (!p) return;
+    if (p.message_id) {
+      const old = await channel.messages.fetch(p.message_id).catch(() => null);
       if (old) await old.delete().catch(() => {});
     }
     const msg = await channel.send(buildPanel());
-    db.setSetting('panel_message_id', msg.id);
+    db.setMarketPanelMessage(channel.id, msg.id);
   } catch (e) {
     console.error('スティッキー貼り直し失敗:', e);
   }

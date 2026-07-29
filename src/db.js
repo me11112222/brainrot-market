@@ -966,6 +966,84 @@ export function getGiveawayWinners(giveawayId) {
     .all(giveawayId);
 }
 
+// ===== パネル配置（言語ごとに複数設置できるようにする）=====
+// 旧実装は settings に1つだけ持っていたため、英語版パネルを置くと日本語版が機能停止していた。
+// 「パネルのチャンネル → そのパネル専用のフィード」をテーブルで持つことで、日本語版/英語版を併設できる。
+// 出品データ自体は共通なので、検索・マッチングは言語をまたいで全件が対象（＝流動性は分断されない）。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS market_panels (
+    channel_id      TEXT PRIMARY KEY,
+    message_id      TEXT,
+    feed_channel_id TEXT
+  );
+  CREATE TABLE IF NOT EXISTS party_panels (
+    channel_id TEXT PRIMARY KEY,
+    message_id TEXT
+  );
+`);
+export function upsertMarketPanel(channelId, messageId, feedChannelId) {
+  db.prepare(
+    `INSERT INTO market_panels (channel_id, message_id, feed_channel_id) VALUES (?, ?, ?)
+     ON CONFLICT(channel_id) DO UPDATE SET
+       message_id      = excluded.message_id,
+       feed_channel_id = COALESCE(excluded.feed_channel_id, market_panels.feed_channel_id)`,
+  ).run(channelId, messageId || null, feedChannelId || null);
+}
+export function setMarketPanelMessage(channelId, messageId) {
+  db.prepare(`UPDATE market_panels SET message_id=? WHERE channel_id=?`).run(messageId, channelId);
+}
+export function getMarketPanel(channelId) {
+  return db.prepare(`SELECT * FROM market_panels WHERE channel_id=?`).get(channelId);
+}
+export function allMarketPanels() {
+  return db.prepare(`SELECT * FROM market_panels`).all();
+}
+export function isMarketPanelChannel(channelId) {
+  return !!db.prepare(`SELECT 1 FROM market_panels WHERE channel_id=?`).get(channelId);
+}
+export function isMarketFeedChannel(channelId) {
+  return !!db.prepare(`SELECT 1 FROM market_panels WHERE feed_channel_id=?`).get(channelId);
+}
+export function deleteMarketPanel(channelId) {
+  db.prepare(`DELETE FROM market_panels WHERE channel_id=?`).run(channelId);
+}
+export function upsertPartyPanel(channelId, messageId) {
+  db.prepare(
+    `INSERT INTO party_panels (channel_id, message_id) VALUES (?, ?)
+     ON CONFLICT(channel_id) DO UPDATE SET message_id = excluded.message_id`,
+  ).run(channelId, messageId || null);
+}
+export function getPartyPanel(channelId) {
+  return db.prepare(`SELECT * FROM party_panels WHERE channel_id=?`).get(channelId);
+}
+export function setPartyPanelMessage(channelId, messageId) {
+  db.prepare(`UPDATE party_panels SET message_id=? WHERE channel_id=?`).run(messageId, channelId);
+}
+export function allPartyPanels() {
+  return db.prepare(`SELECT * FROM party_panels`).all();
+}
+export function isPartyPanelChannel(channelId) {
+  return !!db.prepare(`SELECT 1 FROM party_panels WHERE channel_id=?`).get(channelId);
+}
+export function deletePartyPanel(channelId) {
+  db.prepare(`DELETE FROM party_panels WHERE channel_id=?`).run(channelId);
+}
+// 旧settings方式（単一パネル）からの自動移行。既存の日本語パネルをそのまま引き継ぐ。
+{
+  const n = db.prepare(`SELECT COUNT(*) AS c FROM market_panels`).get().c;
+  const legacy = getSetting('panel_channel_id');
+  if (!n && legacy) {
+    upsertMarketPanel(legacy, getSetting('panel_message_id'), getSetting('feed_channel_id'));
+    console.log('🔀 パネル設定を複数対応テーブルへ移行しました（マーケット）');
+  }
+  const pn = db.prepare(`SELECT COUNT(*) AS c FROM party_panels`).get().c;
+  const legacyP = getSetting('party_panel_channel_id');
+  if (!pn && legacyP) {
+    upsertPartyPanel(legacyP, getSetting('party_panel_message_id'));
+    console.log('🔀 パネル設定を複数対応テーブルへ移行しました（パーティ）');
+  }
+}
+
 // 図鑑などの名前を一括で辞書に取り込む（既存はスキップ）
 export function importItemNames(names) {
   const stmt = db.prepare(`INSERT OR IGNORE INTO items (name, uses) VALUES (?, 0)`);
