@@ -23,6 +23,11 @@ import {
   maybeRepostPartySticky,
   maybeRepostPartyControl,
 } from './party.js';
+import {
+  giveawayCommands,
+  handleGiveawayInteraction,
+  startGiveawaySweepLoop,
+} from './giveaway.js';
 import { importItemNames } from './db.js';
 import { readFileSync } from 'node:fs';
 
@@ -51,6 +56,7 @@ const commands = [
     .toJSON(),
   ...marketplaceCommands,
   ...partyCommands,
+  ...giveawayCommands,
 ];
 
 const client = new Client({
@@ -132,8 +138,10 @@ client.once(Events.ClientReady, async (c) => {
   await syncEmojisAcrossGuilds(client); // 削除済み絵文字をDBから掃除
   startRoomExpiryLoop(client); // 取引ルームの無反応自動クローズ等
   startPartySweepLoop(client); // パーティ募集の自動失効等
+  startGiveawaySweepLoop(client); // 抽選の締切監視＋自動抽選
   console.log('🛒 マーケットプレイス機能 起動');
   console.log('🎮 パーティ募集機能 起動');
+  console.log('🎁 抽選機能 起動');
 });
 
 // 招待されても許可外サーバーなら即退出
@@ -156,6 +164,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
     // パーティ募集（pty_ 名前空間・/募集パネル設置）
     if (await handlePartyInteraction(interaction)) return;
+    // 抽選（gw_ 名前空間・/抽選作成 /抽選中止）
+    if (await handleGiveawayInteraction(interaction)) return;
     // マーケットプレイス（コマンド・ボタン・モーダル）
     await handleMarketplaceInteraction(interaction);
   } catch (err) {

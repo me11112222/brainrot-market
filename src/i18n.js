@@ -109,6 +109,39 @@ const D = {
     ja: '⚠️ 出品者は退出できないよ。終わったら「✅取引完了」を押してね。',
     en: '⚠️ The seller can’t leave. Press “✅ Done” when finished.',
   },
+  // ===== 抽選（プレゼント企画）=====
+  gw_created: {
+    ja: '✅ 抽選 #{id} を作ったよ！締切になったら自動で抽選＆発表するね。',
+    en: '✅ Giveaway #{id} created! It will draw and announce automatically at the deadline.',
+  },
+  gw_bad_input: {
+    ja: '⚠️ 当選人数は1〜20、締切は1〜336時間の**数字**で入れてね。',
+    en: '⚠️ Winners must be 1–20 and the deadline 1–336 hours (numbers only).',
+  },
+  gw_post_fail: {
+    ja: '❌ カードを投稿できなかった（このチャンネルでの送信権限を確認してね）。',
+    en: '❌ Couldn’t post the card (check my permissions in this channel).',
+  },
+  gw_not_found: { ja: '⚠️ その抽選が見つからないよ。', en: '⚠️ Giveaway not found.' },
+  gw_closed: {
+    ja: '⌛ この抽選はもう締め切られてるよ。',
+    en: '⌛ This giveaway is already closed.',
+  },
+  gw_rate: { ja: '⏳ 押すのが早すぎ！少し待ってね。', en: '⏳ Too fast — wait a moment.' },
+  gw_too_new: {
+    ja: '🔒 この抽選はアカウント作成から**{n}日以上**の人が対象だよ。',
+    en: '🔒 This giveaway requires an account at least **{n} days** old.',
+  },
+  gw_already: {
+    ja: '✅ もう参加してるよ！結果発表を待ってね。',
+    en: '✅ You’re already entered! Wait for the results.',
+  },
+  gw_entered: {
+    ja: '🎟️ エントリー完了！（現在 {n}人）結果発表を待ってね🍀',
+    en: '🎟️ You’re in! ({n} entries) Good luck 🍀',
+  },
+  gw_cancelled: { ja: '🛑 抽選 #{id} を中止したよ。', en: '🛑 Giveaway #{id} cancelled.' },
+
   // 出品者が退出＝取引ナシ。部屋は解散するが出品はリストに残る
   seller_left_room: {
     ja: '🚪 抜けたよ。この部屋は閉じるね（出品はリストに残ってるから、また誰か来たら取引できるよ）。',

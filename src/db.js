@@ -856,6 +856,112 @@ export function saveProfile(userId, fnId, power) {
   ).run(userId, fnId || null, power ?? null, Date.now());
 }
 
+// ===== 抽選（プレゼント企画）=====
+// カードはDB行＋1メッセージ。スレッドを一切使わないので1000枠を消費しない。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS giveaways (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    host_id       TEXT    NOT NULL,
+    title         TEXT    NOT NULL,
+    prize_name    TEXT,                       -- 図鑑のベース名（マッチした時のみ）
+    prize_label   TEXT    NOT NULL,           -- 表示名（変異/★込みの入力そのまま）
+    prize_img     TEXT,
+    note          TEXT,
+    winners       INTEGER NOT NULL DEFAULT 1,
+    min_acct_days INTEGER NOT NULL DEFAULT 0, -- 参加条件（アカウント作成からの日数・0=誰でも）
+    status        TEXT    NOT NULL DEFAULT 'open', -- open / drawn / cancelled
+    channel_id    TEXT,
+    message_id    TEXT,
+    created_at    INTEGER NOT NULL,
+    ends_at       INTEGER NOT NULL,
+    drawn_at      INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_gw_status ON giveaways(status, ends_at);
+  CREATE TABLE IF NOT EXISTS giveaway_entries (
+    giveaway_id INTEGER NOT NULL,
+    user_id     TEXT    NOT NULL,
+    user_tag    TEXT,
+    entered_at  INTEGER NOT NULL,
+    PRIMARY KEY (giveaway_id, user_id)
+  );
+  CREATE TABLE IF NOT EXISTS giveaway_winners (
+    giveaway_id INTEGER NOT NULL,
+    user_id     TEXT    NOT NULL,
+    user_tag    TEXT,
+    PRIMARY KEY (giveaway_id, user_id)
+  );
+`);
+export function addGiveaway(g) {
+  const info = db
+    .prepare(
+      `INSERT INTO giveaways
+       (host_id, title, prize_name, prize_label, prize_img, note, winners, min_acct_days, created_at, ends_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      g.hostId, g.title, g.prizeName || null, g.prizeLabel, g.prizeImg || null,
+      g.note || null, g.winners, g.minAcctDays || 0, Date.now(), g.endsAt,
+    );
+  return Number(info.lastInsertRowid);
+}
+export function getGiveaway(id) {
+  return db.prepare(`SELECT * FROM giveaways WHERE id=?`).get(id);
+}
+export function setGiveawayMessage(id, channelId, messageId) {
+  db.prepare(`UPDATE giveaways SET channel_id=?, message_id=? WHERE id=?`).run(
+    channelId, messageId, id,
+  );
+}
+export function setGiveawayStatus(id, status) {
+  db.prepare(`UPDATE giveaways SET status=?, drawn_at=? WHERE id=?`).run(
+    status, Date.now(), id,
+  );
+}
+// 締切が来た未抽選の企画（起動直後の取りこぼしもここで拾う）
+export function dueGiveaways(now = Date.now()) {
+  return db
+    .prepare(`SELECT * FROM giveaways WHERE status='open' AND ends_at <= ? ORDER BY ends_at`)
+    .all(now);
+}
+export function openGiveaways() {
+  return db.prepare(`SELECT * FROM giveaways WHERE status='open' ORDER BY ends_at`).all();
+}
+// 参加登録。既に参加済みなら false（重複エントリー防止＝1人1票）
+export function addGiveawayEntry(giveawayId, userId, tag) {
+  const info = db
+    .prepare(
+      `INSERT OR IGNORE INTO giveaway_entries (giveaway_id, user_id, user_tag, entered_at)
+       VALUES (?, ?, ?, ?)`,
+    )
+    .run(giveawayId, userId, tag || null, Date.now());
+  return Number(info.changes || 0) > 0;
+}
+export function hasGiveawayEntry(giveawayId, userId) {
+  return !!db
+    .prepare(`SELECT 1 FROM giveaway_entries WHERE giveaway_id=? AND user_id=?`)
+    .get(giveawayId, userId);
+}
+export function countGiveawayEntries(giveawayId) {
+  return db
+    .prepare(`SELECT COUNT(*) AS c FROM giveaway_entries WHERE giveaway_id=?`)
+    .get(giveawayId).c;
+}
+export function allGiveawayEntries(giveawayId) {
+  return db
+    .prepare(`SELECT user_id, user_tag FROM giveaway_entries WHERE giveaway_id=? ORDER BY entered_at`)
+    .all(giveawayId);
+}
+export function addGiveawayWinner(giveawayId, userId, tag) {
+  db.prepare(
+    `INSERT OR IGNORE INTO giveaway_winners (giveaway_id, user_id, user_tag) VALUES (?, ?, ?)`,
+  ).run(giveawayId, userId, tag || null);
+}
+export function getGiveawayWinners(giveawayId) {
+  return db
+    .prepare(`SELECT user_id, user_tag FROM giveaway_winners WHERE giveaway_id=?`)
+    .all(giveawayId);
+}
+
 // 図鑑などの名前を一括で辞書に取り込む（既存はスキップ）
 export function importItemNames(names) {
   const stmt = db.prepare(`INSERT OR IGNORE INTO items (name, uses) VALUES (?, 0)`);
