@@ -140,6 +140,14 @@ const D = {
     ja: '🎟️ エントリー完了！（現在 {n}人）結果発表を待ってね🍀',
     en: '🎟️ You’re in! ({n} entries) Good luck 🍀',
   },
+  gw_no_winner: {
+    ja: '⚠️ その抽選にはまだ当選者がいないよ（未抽選か、参加者0人だった）。',
+    en: '⚠️ That giveaway has no winner yet (not drawn, or nobody entered).',
+  },
+  gw_reannounced: {
+    ja: '📣 抽選 #{id} の結果をもう一度発表したよ。',
+    en: '📣 Re-announced the result of giveaway #{id}.',
+  },
   gw_ended: {
     ja: '🎬 抽選 #{id} を締め切ったよ！いま抽選して発表するね。',
     en: '🎬 Giveaway #{id} closed — drawing and announcing now.',

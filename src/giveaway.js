@@ -62,6 +62,14 @@ export const giveawayCommands = [
     )
     .toJSON(),
   new SlashCommandBuilder()
+    .setName('抽選結果')
+    .setDescription('【運営用】抽選済みの結果をもう一度発表する（発表が流れた/失敗した時）')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addIntegerOption((o) =>
+      o.setName('番号').setDescription('カード下部の「抽選 #番号」').setRequired(true),
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
     .setName('抽選中止')
     .setDescription('【運営用】抽選せずに中止する（当選者なし）')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
@@ -383,35 +391,69 @@ async function doDraw(client, g) {
     return;
   }
 
-  // 🥁ドラムロール → 3秒後に結果へ差し替え（発表感を出す）
-  const rate = ((winners.length / entries.length) * 100).toFixed(1);
+  await announceWinners(ch, g, winners, entries.length);
+}
+
+// 当選発表（🥁演出つき）。
+// ⚠️ allowedMentions.users は必ず重複を潰す。主催者が当選した場合に同じIDが2つ入り、
+//    DiscordがInvalid Form Body(50035)で拒否 → 「抽選中…」のまま止まる事故が実際に起きた。
+// 失敗は握りつぶさず必ずログに残し、編集ダメなら新規送信 → それもダメならping無しで再送。
+async function announceWinners(ch, g, winners, entryCount) {
+  const rate = entryCount ? ((winners.length / entryCount) * 100).toFixed(1) : '0.0';
   const body =
     `🎉🎉 **当選者発表 / WINNER** 🎉🎉\n` +
     `🎁 **${g.prize_label}**（${g.title}）\n\n` +
     winners
       .map((w) => `👑 <@${w.user_id}>　\`${w.user_tag || '?'}\`　\`ID: ${w.user_id}\``)
       .join('\n') +
-    `\n\n📊 参加 **${entries.length}人** → 当選 **${winners.length}人**（当選確率 ${rate}%）\n` +
+    `\n\n📊 参加 **${entryCount}人** → 当選 **${winners.length}人**（当選確率 ${rate}%）\n` +
     `🙌 参加してくれたみんなありがとう！ / Thanks to everyone who entered!\n` +
     `📮 <@${g.host_id}> 受け渡しよろしく！`;
+  const users = [...new Set([...winners.map((w) => w.user_id), g.host_id])];
+  const payload = { content: body, allowedMentions: { users } };
+
+  let drum = null;
   try {
-    const drum = await ch.send({ content: '🥁 **抽選中…** / Drawing…', allowedMentions: NO_PING });
-    setTimeout(() => {
-      drum
-        .edit({
-          content: body,
-          allowedMentions: { users: [...winners.map((w) => w.user_id), g.host_id] },
-        })
-        .catch(() => {
-          ch.send({
-            content: body,
-            allowedMentions: { users: [...winners.map((w) => w.user_id), g.host_id] },
-          }).catch(() => {});
-        });
-    }, 3000);
+    drum = await ch.send({ content: '🥁 **抽選中…** / Drawing…', allowedMentions: NO_PING });
+    await new Promise((r) => setTimeout(r, 2500));
   } catch (e) {
-    console.error('抽選発表失敗:', e);
+    console.error('抽選: ドラムロール送信失敗:', e?.rawError || e);
   }
+  if (drum) {
+    try {
+      await drum.edit(payload);
+      return;
+    } catch (e) {
+      console.error('抽選: 発表への編集失敗→新規送信で再試行:', e?.rawError || e);
+    }
+  }
+  try {
+    await ch.send(payload);
+  } catch (e) {
+    console.error('抽選: 発表送信失敗→ping無しで再試行:', e?.rawError || e);
+    await ch
+      .send({ content: body, allowedMentions: NO_PING })
+      .catch((e2) => console.error('抽選: 発表送信(ping無し)も失敗:', e2?.rawError || e2));
+  }
+}
+
+// ===== 結果の再発表（発表が流れた／失敗した時の救済。DBの当選者をそのまま出す）=====
+async function reannounce(interaction, id) {
+  const lc = interaction.locale;
+  const g = db.getGiveaway(id);
+  if (!g) {
+    return interaction.reply({ content: t(lc, 'gw_not_found'), flags: MessageFlags.Ephemeral });
+  }
+  const winners = db.getGiveawayWinners(id);
+  if (!winners.length) {
+    return interaction.reply({ content: t(lc, 'gw_no_winner'), flags: MessageFlags.Ephemeral });
+  }
+  await interaction.reply({ content: t(lc, 'gw_reannounced', { id }), flags: MessageFlags.Ephemeral });
+  const ch =
+    (g.channel_id && (await interaction.client.channels.fetch(g.channel_id).catch(() => null))) ||
+    interaction.channel;
+  await announceWinners(ch, g, winners, db.countGiveawayEntries(id));
+  await refreshCard(interaction.client, id, winners);
 }
 
 // ===== 今すぐ終了（締切を待たずに抽選＆発表）=====
@@ -455,6 +497,10 @@ export async function handleGiveawayInteraction(interaction) {
     }
     if (interaction.commandName === '抽選終了') {
       await endGiveawayNow(interaction, interaction.options.getInteger('番号'));
+      return true;
+    }
+    if (interaction.commandName === '抽選結果') {
+      await reannounce(interaction, interaction.options.getInteger('番号'));
       return true;
     }
     if (interaction.commandName === '抽選中止') {
