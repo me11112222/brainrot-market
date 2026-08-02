@@ -802,6 +802,15 @@ function nameSearchModal(lc) {
 }
 function itemView(rarity, page, lc) {
   const all = catalog.itemsByCategory(rarity);
+  // 空カテゴリ（古いパネルのラベル・図鑑リロード直後など）で空のセレクトを組むと
+  // Discord APIの50035 (options 1-25制約) になるためガード
+  if (!all.length) {
+    return {
+      content: t(lc, 'no_match'),
+      embeds: [],
+      components: [rarityRow(lc), searchRow(lc)],
+    };
+  }
   const pages = Math.max(1, Math.ceil(all.length / 25));
   const p = Math.min(Math.max(0, page), pages - 1);
   const slice = all.slice(p * 25, p * 25 + 25);
