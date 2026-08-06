@@ -11,6 +11,17 @@ const db = new DatabaseSync(join(__dirname, '..', 'data.sqlite'));
 // 絵文字アップロード等の別プロセスとbot本体が同じDBを触っても「database is locked」で落ちないように。
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA busy_timeout = 5000');
+// ディスクを叩く回数を減らす設定。
+// このVMのディスクは非常に遅く、主キー1行のUPDATEに207ms、索引つきSELECTに13秒かかることがある
+// （CPU・メモリは余っているので、待っているのは全部I/O）。node:sqlite は同期APIなので、
+// 1本の遅いクエリがそのままBot全体の停止＝ボタンの「応答しませんでした」になる。
+// - cache_size: 64MB分のページをメモリに保持（既定は2MB）。12万行の出品表を読み直さずに済む
+// - mmap_size: 読み取りをmmap経由にして、read()システムコール自体を減らす
+// - synchronous=NORMAL: WALでの推奨値。毎回のfsyncを省く（Botが落ちても復旧可能。
+//   OSごと落ちた時に最後の数トランザクションを失う可能性があるだけ）
+db.exec('PRAGMA cache_size = -65536');
+db.exec('PRAGMA mmap_size = 268435456');
+db.exec('PRAGMA synchronous = NORMAL');
 
 // 遅いクエリの検出。
 // node:sqlite は同期APIなので、1本のクエリが遅いとその間Bot全体が停止し、
@@ -614,6 +625,10 @@ db.exec(`
     ts      INTEGER NOT NULL,
     PRIMARY KEY (name, user_id)
   );
+  -- 需要ランキングの2本のクエリ（name指定の件数・期間内の全体集計）を、この索引だけで賄う。
+  -- 主キーは (name, user_id) で ts を含まないため、これが無いと毎回行本体を読みに行き、
+  -- ディスクの遅いこのVMでは1回1.3秒かかっていた。
+  CREATE INDEX IF NOT EXISTS idx_want_hits_name_ts ON want_hits(name, ts);
 `);
 export function recordWant(name, userId) {
   const n = (name || '').trim();
