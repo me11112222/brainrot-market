@@ -27,6 +27,10 @@ const PARTY_TTL = 6 * 60 * 60 * 1000; // 募集は6時間で自動失効（ボ�
 //   ①部屋は「最初の参加者が来た時」に作る＝参加者ゼロの募集はスレッド0本
 //   ②部屋は無人1時間で自動クローズ＝出発済みの部屋が枠に居座らない
 const PARTY_IDLE_TTL = 60 * 60 * 1000;
+// 満員になった部屋は20分で畳む。集合してゲームへ移った後の部屋が1時間居座ると、
+// ピーク時（毎時130部屋）には584枠＝全体の6割を占めてしまい、取引ルームが作れなくなる。
+// まだ募集中の部屋は上の1時間のままにして、ゆっくり集まる募集を巻き込まない。
+const PARTY_FULL_IDLE_TTL = 20 * 60 * 1000;
 const NO_PING = { parse: [] };
 
 // 種別ごとの見た目・ルール
@@ -861,6 +865,15 @@ export function startPartySweepLoop(client) {
   }, 60 * 1000);
 }
 async function sweepParties(client) {
+  // 満員after20分クローズ（集合済み＝もうゲームの中。部屋だけが枠に残るのを防ぐ）
+  for (const p of db.idleFullPartiesWithThread(PARTY_FULL_IDLE_TTL)) {
+    db.setPartyStatus(p.id, 'closed');
+    await cleanupParty(
+      client,
+      p,
+      `🎉 集合おつかれ！部屋を閉じるね。またボス戦で会おう！ / Squad's off — closing this room. GLHF!`,
+    );
+  }
   // 部屋の無人1時間クローズ（出発済み/放置の部屋がスレッド枠に居座らないように）
   for (const p of db.idlePartiesWithThread(PARTY_IDLE_TTL)) {
     db.setPartyStatus(p.id, 'expired');

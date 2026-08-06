@@ -775,6 +775,18 @@ export function idlePartiesWithThread(idleMs) {
     )
     .all(Date.now() - idleMs);
 }
+// 満員になった募集のうち、部屋が静かになったもの。
+// 満員＝集合が済んでゲームへ移動した後なので、まだ募集中の部屋より早く畳んでよい。
+// （スレッド枠1000本の大半をこの「解散済みなのに残っている部屋」が占めていた）
+export function idleFullPartiesWithThread(idleMs) {
+  return db
+    .prepare(
+      `SELECT * FROM parties
+       WHERE status='full' AND thread_id IS NOT NULL
+         AND COALESCE(last_active, created_at) < ?`,
+    )
+    .all(Date.now() - idleMs);
+}
 // ホストの進行中パーティ（1人1件/種別 の制限用）
 export function activePartyByHost(hostId, kind) {
   return db
