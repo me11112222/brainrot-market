@@ -49,8 +49,11 @@ const CONTROL_HINT =
 const SELLER_LEFT_NOTICE =
   '🚪 出品者がこの取引から抜けたので、この部屋は閉じるね（出品はリストに残ってるよ）\n' +
   'The seller left this trade — closing this room. The listing stays in the feed.';
-// 取引ルーム同時生成のレース防止（単一プロセス内ロック）
-const creatingRooms = new Set();
+// 取引ルーム同時生成のレース防止（単一プロセス内ロック）。値＝ロックした時刻。
+// 時刻で持つのは、万一解放し損ねた時に一定時間で自然に無効化するため。
+// （Setで持っていた頃、解放漏れでその出品が永久に「作成中」になり押せなくなる事故があった）
+const creatingRooms = new Map();
+const ROOM_LOCK_MS = 30_000; // これを過ぎたロックは死んだものとして無視する
 // 荒らし対策のしきい値
 const LIMITS = {
   listingsPerMin: 1, // 1分あたりの出品回数（安全寄り）
@@ -310,12 +313,15 @@ async function startMatch(interaction, listing) {
     return interaction.reply({ content: t(lc, 'rl_room'), flags: MessageFlags.Ephemeral });
   }
   // 二重生成レース防止：同じ出品を同時に処理させない
-  if (creatingRooms.has(listing.id)) {
+  const lockedAt = creatingRooms.get(listing.id);
+  if (lockedAt && Date.now() - lockedAt < ROOM_LOCK_MS) {
     return interaction.reply({ content: t(lc, 'room_busy'), flags: MessageFlags.Ephemeral });
   }
-  creatingRooms.add(listing.id);
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  creatingRooms.set(listing.id, Date.now());
   try {
+    // deferReply も必ず try の中で。ここで失敗（3秒超過でinteraction期限切れ等）しても
+    // finally でロックを解放するため。外に置くと解放漏れ＝その出品が永久ロックになる。
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     // 直前に別人が部屋を作っていたら、そこへ合流（新規スレッドを作らない）
     const existing = db.getRoom(listing.id);
     if (existing) {
@@ -358,7 +364,10 @@ async function startMatch(interaction, listing) {
     if (err?.rawError?.errors) {
       console.error('ルーム作成 50035詳細:', JSON.stringify(err.rawError.errors));
     }
-    await interaction.editReply(t(lc, 'room_fail'));
+    // deferReply 自体が失敗している場合は editReply も必ず失敗するので、送れる時だけ返す
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply(t(lc, 'room_fail')).catch(() => {});
+    }
   } finally {
     creatingRooms.delete(listing.id);
   }
