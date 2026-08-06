@@ -833,6 +833,23 @@ export function expireParties(maxAgeMs) {
   ).run(cutoff);
   return rows;
 }
+// 閉じる印が付いたのに、まだカード/スレッドが残っている募集。
+// 「印を付ける（DBだけ・一瞬）」と「後片付け（Discord APIを叩く・遅い）」を分けるための入口。
+// 片付け切れなかった分は thread_id/message_id が残るので次の周で必ず拾われる＝取りこぼさない。
+export function partiesNeedingCleanup(limit = 20) {
+  return db
+    .prepare(
+      `SELECT * FROM parties
+       WHERE status IN ('closed','expired')
+         AND (thread_id IS NOT NULL OR message_id IS NOT NULL)
+       ORDER BY id LIMIT ?`,
+    )
+    .all(limit);
+}
+// 後片付けが済んだ印（これを消さないと毎周やり直してしまう）
+export function markPartyCleaned(id) {
+  db.prepare(`UPDATE parties SET thread_id=NULL, message_id=NULL WHERE id=?`).run(id);
+}
 // 古い closed/expired パーティ行の物理削除（メンバー行も道連れ）
 export function prunePartyRows(maxAgeMs) {
   const cutoff = Date.now() - maxAgeMs;

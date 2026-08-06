@@ -866,31 +866,30 @@ export function startPartySweepLoop(client) {
   }, 60 * 1000);
 }
 async function sweepParties(client) {
-  // 満員after20分クローズ（集合済み＝もうゲームの中。部屋だけが枠に残るのを防ぐ）
+  // ① 閉じる印を付ける（DBだけなので一瞬。件数がいくら多くても詰まらない）
   for (const p of db.idleFullPartiesWithThread(PARTY_FULL_IDLE_TTL)) {
-    db.setPartyStatus(p.id, 'closed');
-    await cleanupParty(
-      client,
-      p,
-      `🎉 集合おつかれ！部屋を閉じるね。またボス戦で会おう！ / Squad's off — closing this room. GLHF!`,
-    );
+    db.setPartyStatus(p.id, 'closed'); // 満員after20分＝集合済み
   }
-  // 部屋の無人1時間クローズ（出発済み/放置の部屋がスレッド枠に居座らないように）
   for (const p of db.idlePartiesWithThread(PARTY_IDLE_TTL)) {
-    db.setPartyStatus(p.id, 'expired');
-    await cleanupParty(
-      client,
-      p,
-      `🕐 1時間動きがなかったので部屋を閉じたよ。ゲーム楽しんで！ / Room closed after 1h of quiet — enjoy the game!`,
-    );
+    db.setPartyStatus(p.id, 'expired'); // 無人1時間
   }
-  // 6時間で自動失効（カード削除＋スレッドにお知らせ→削除）
-  for (const p of db.expireParties(PARTY_TTL)) {
+  db.expireParties(PARTY_TTL); // 6時間の寿命切れ
+
+  // ② 印の付いたものを1周20件だけ後片付けする（ここだけDiscord APIを叩く）。
+  //    溜まった部屋を一度に全部閉じにいくと、1部屋あたり数リクエスト × 数百部屋が
+  //    送信キューを埋め、ユーザーのボタン応答が3秒の期限を超えて
+  //    「応答しませんでした」になる。60秒ごとに回るので1周20件でも1時間で1200件片付く。
+  //    片付け切れなかった分は印が残るので次の周で拾われる＝取りこぼさない。
+  for (const p of db.partiesNeedingCleanup(20)) {
     await cleanupParty(
       client,
       p,
-      `⌛ <@${p.host_id}> 時間切れで募集を閉じたよ。また「⚔️/🔮」から募集してね！ / Recruit expired — post again anytime!`,
+      p.status === 'closed'
+        ? `🎉 集合おつかれ！部屋を閉じるね。またボス戦で会おう！ / Squad's off — closing this room. GLHF!`
+        : `⌛ <@${p.host_id}> 募集を閉じたよ。また「⚔️/🔮」から募集してね！ / Recruit closed — post again anytime!`,
     );
+    db.markPartyCleaned(p.id);
+    await new Promise((r) => setTimeout(r, 250)); // 他の処理に順番を譲る
   }
   db.prunePartyRows(7 * 24 * 60 * 60 * 1000);
   // パネルを常に最下部へ
