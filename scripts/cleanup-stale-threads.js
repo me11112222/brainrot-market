@@ -11,6 +11,7 @@
 //   node scripts/cleanup-stale-threads.js                  # 確認のみ（既定: 3時間以上停止）
 //   node scripts/cleanup-stale-threads.js --hours 6        # しきい値を変える
 //   node scripts/cleanup-stale-threads.js --channel <id>   # 特定チャンネルだけ（複数可）
+//   node scripts/cleanup-stale-threads.js --stats          # 停止時間の分布を見る（原因調査用）
 //   node scripts/cleanup-stale-threads.js --apply          # 実際にアーカイブ
 import 'dotenv/config';
 import { REST, Routes } from 'discord.js';
@@ -25,6 +26,7 @@ const rest = new REST({ version: '10' }).setToken(token);
 
 const args = process.argv.slice(2);
 const APPLY = args.includes('--apply');
+const STATS = args.includes('--stats');
 const hoursArg = args.indexOf('--hours');
 const HOURS = hoursArg >= 0 ? Number(args[hoursArg + 1]) : 3;
 if (!Number.isFinite(HOURS) || HOURS <= 0) {
@@ -60,13 +62,42 @@ const byParent = new Map();
 for (const t of threads) {
   if (only.size && !only.has(t.parent_id)) continue;
   const key = t.parent_id || '(親不明)';
-  if (!byParent.has(key)) byParent.set(key, { total: 0, stale: 0 });
+  if (!byParent.has(key)) byParent.set(key, { total: 0, stale: 0, idles: [] });
   const row = byParent.get(key);
   row.total++;
+  row.idles.push(idleMs(t));
   if (idleMs(t) >= cutoff) {
     row.stale++;
     stale.push(t);
   }
+}
+
+// 調査用: 「なぜ停止扱いにならないのか」を見るために停止時間の分布を出す。
+// 全部が新しい＝作られ続けている、全部が同じくらい＝何かが一斉に触っている、の判別に使う。
+if (STATS) {
+  const h = (ms) => (ms / 3600000).toFixed(1) + 'h';
+  const pct = (sorted, p) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))];
+  console.log('— 停止時間の分布（最後の発言からの経過）—');
+  for (const [pid, row] of [...byParent.entries()].sort((a, b) => b[1].total - a[1].total)) {
+    const s = row.idles.slice().sort((a, b) => a - b);
+    console.log(
+      `  ${(nameById.get(pid) || pid).padEnd(34)} ${String(row.total).padStart(4)}本  ` +
+        `最短${h(s[0])} / 中央${h(pct(s, 0.5))} / 9割${h(pct(s, 0.9))} / 最長${h(s[s.length - 1])}`,
+    );
+  }
+  // 作成時刻の分布も見る（＝いつ作られたスレッドが生き残っているのか）
+  console.log('\n— 作成からの経過 —');
+  for (const [pid, row] of [...byParent.entries()].sort((a, b) => b[1].total - a[1].total)) {
+    const ages = threads
+      .filter((t) => (t.parent_id || '(親不明)') === pid)
+      .map((t) => now - (tsOf(t.id) ?? now))
+      .sort((a, b) => a - b);
+    console.log(
+      `  ${(nameById.get(pid) || pid).padEnd(34)} ` +
+        `最新${h(ages[0])} / 中央${h(pct(ages, 0.5))} / 最古${h(ages[ages.length - 1])}`,
+    );
+  }
+  console.log('');
 }
 
 for (const [pid, row] of [...byParent.entries()].sort((a, b) => b[1].stale - a[1].stale)) {
