@@ -19,6 +19,7 @@ import * as db from './db.js';
 import * as catalog from './catalog.js';
 import { t, L } from './i18n.js';
 import { cleanText, contentIssue, rateOk, cleanupBuckets } from './moderation.js';
+import { closeThreadSoon } from './threads.js';
 
 const COLOR = 0x57f287;
 // 取引ルーム：無反応5分で警告（残り時間表示＋ホストPing）→計10分で削除＆自動再出品。
@@ -397,7 +398,7 @@ async function closeListing(interaction, listingId, byDone) {
   if (room) {
     db.deleteRoom(listingId);
     const thread = await interaction.client.channels.fetch(room.thread_id).catch(() => null);
-    if (thread) setTimeout(() => thread.delete().catch(() => {}), 4000);
+    if (thread) closeThreadSoon(thread, 4000);
   }
 }
 
@@ -497,7 +498,7 @@ async function finalizeTrade(interaction, listing, buyerId) {
   if (room) {
     db.deleteRoom(listing.id);
     const thread = await interaction.client.channels.fetch(room.thread_id).catch(() => null);
-    if (thread) setTimeout(() => thread.delete().catch(() => {}), 5000);
+    if (thread) closeThreadSoon(thread, 5000);
   }
 }
 
@@ -1402,7 +1403,7 @@ async function leaveRoom(interaction, listingId) {
     db.deleteRoom(listingId);
     if (thread?.isThread?.()) {
       await thread.send(SELLER_LEFT_NOTICE).catch(() => {});
-      setTimeout(() => thread.delete().catch(() => {}), 5000);
+      closeThreadSoon(thread, 5000);
     }
     return;
   }
@@ -1626,7 +1627,12 @@ async function sweepOnce(client) {
       }
       if (idle >= ROOM_IDLE_TTL || age >= ROOM_HARD_MAX) {
         await notifyRoomClosed(client, r); // 出品者✅済み→クローズ / 5ストライク→取り下げ / 他→自動再出品
-        await thread.delete().catch(() => {});
+        try {
+          await thread.delete();
+        } catch (e) {
+          console.error('部屋の削除に失敗→アーカイブで枠を返す:', e?.rawError?.message || e?.message || e);
+          await thread.setArchived(true).catch(() => {});
+        }
         db.deleteRoom(r.listing_id);
       } else if (idle >= ROOM_WARN && !r.warned) {
         const ping = listing ? `<@${listing.seller_id}>` : '';

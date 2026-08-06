@@ -21,6 +21,7 @@ import * as db from './db.js';
 import * as catalog from './catalog.js';
 import { t } from './i18n.js';
 import { cleanText, contentIssue, rateOk } from './moderation.js';
+import { closeThreadSoon } from './threads.js';
 
 const PARTY_TTL = 6 * 60 * 60 * 1000; // 募集は6時間で自動失効（ボスラッシュは当日集めが基本）
 // スレッド枠（ギルド全体1000）を守る2本柱:
@@ -541,7 +542,7 @@ async function cleanupParty(client, party, threadMsg) {
     const thread = await client.channels.fetch(party.thread_id).catch(() => null);
     if (thread) {
       if (threadMsg) await thread.send(threadMsg).catch(() => {});
-      setTimeout(() => thread.delete().catch(() => {}), 5000);
+      closeThreadSoon(thread);
     }
   }
 }
