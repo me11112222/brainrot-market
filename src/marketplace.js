@@ -282,23 +282,30 @@ async function channelForListing(client, listing) {
 async function startMatch(interaction, listing) {
   const lc = interaction.locale;
   const user = interaction.user;
+  // 何より先に「考え中」を返す。
+  // Discordの3秒制限は"最初の応答まで"で、受け取ってしまえば以降は15分使える。
+  // 以前はスレッド取得・チャンネル取得（API 2回）を先にやっており、
+  // この環境ではAPI 1回に2〜3秒かかるため、応答する前に期限切れになっていた。
+  try {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  } catch (e) {
+    console.error('取引ボタン: 受付に失敗（期限切れ）:', e?.rawError?.message || e?.message || e);
+    return;
+  }
   if (listing.status !== 'active') {
-    return interaction.reply({ content: t(lc, 'listing_ended'), flags: MessageFlags.Ephemeral });
+    return interaction.editReply(t(lc, 'listing_ended'));
   }
   const room = db.getRoom(listing.id);
   if (room) {
     const thread = await interaction.client.channels.fetch(room.thread_id).catch(() => null);
     if (thread) {
       await thread.members.add(user.id).catch(() => {});
-      return interaction.reply({
-        content: t(lc, 'room_here', { thread }),
-        flags: MessageFlags.Ephemeral,
-      });
+      return interaction.editReply(t(lc, 'room_here', { thread }));
     }
     db.deleteRoom(listing.id);
   }
   if (listing.seller_id === user.id) {
-    return interaction.reply({ content: t(lc, 'own_listing'), flags: MessageFlags.Ephemeral });
+    return interaction.editReply(t(lc, 'own_listing'));
   }
   // 取引ルームは「そのカードが載っているフィード」側に作る
   // → 操作チャンネルにスレッドが立たない＝パネルが流れない。日本語版/英語版それぞれの場所に立つ。
@@ -308,21 +315,18 @@ async function startMatch(interaction, listing) {
     if (parent?.isThread()) parent = parent.parent;
   }
   if (!parent || parent.type !== ChannelType.GuildText) {
-    return interaction.reply({ content: t(lc, 'cant_make_room'), flags: MessageFlags.Ephemeral });
+    return interaction.editReply(t(lc, 'cant_make_room'));
   }
   if (!rateOk('room', user.id, LIMITS.roomsPerMin)) {
-    return interaction.reply({ content: t(lc, 'rl_room'), flags: MessageFlags.Ephemeral });
+    return interaction.editReply(t(lc, 'rl_room'));
   }
   // 二重生成レース防止：同じ出品を同時に処理させない
   const lockedAt = creatingRooms.get(listing.id);
   if (lockedAt && Date.now() - lockedAt < ROOM_LOCK_MS) {
-    return interaction.reply({ content: t(lc, 'room_busy'), flags: MessageFlags.Ephemeral });
+    return interaction.editReply(t(lc, 'room_busy'));
   }
   creatingRooms.set(listing.id, Date.now());
   try {
-    // deferReply も必ず try の中で。ここで失敗（3秒超過でinteraction期限切れ等）しても
-    // finally でロックを解放するため。外に置くと解放漏れ＝その出品が永久ロックになる。
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     // 直前に別人が部屋を作っていたら、そこへ合流（新規スレッドを作らない）
     const existing = db.getRoom(listing.id);
     if (existing) {

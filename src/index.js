@@ -100,6 +100,17 @@ const client = new Client({
   },
 });
 
+// Discord APIに待たされた分を記録する。
+// ハンドラが2〜4秒かかっているのに、CPUもDBも止まっていない＝API往復で消えている。
+// それが「レート制限による順番待ち」なのか「純粋な通信遅延」なのかで打ち手が変わるので、
+// 待たされた時だけルート名と待ち時間を出す（通常時は無音）。
+client.rest.on('rateLimited', (info) => {
+  console.warn(
+    `🚦 レート制限 ${info.timeToReset}ms待ち` +
+      `${info.global ? '（全体）' : ''} ${info.method} ${info.route}`,
+  );
+});
+
 // サーバーロック：メインサーバー以外には居座らせない
 // （RMT業者などが MEGA MECHSPOT を自分のサーバーに招待しても即退出させる）
 const ALLOWED_GUILD = GUILD_ID; // 本番は固定。空（開発時）なら制限しない
