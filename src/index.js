@@ -3,6 +3,7 @@ import {
   Client,
   GatewayIntentBits,
   Events,
+  MessageFlags,
   Options,
   REST,
   Routes,
@@ -42,6 +43,25 @@ process.on('uncaughtException', (err) => {
   console.error('💥 uncaughtException:', err);
   process.exit(1);
 });
+
+// イベントループが止まっていないかの監視。
+// Discordのボタンは押されてから3秒以内に応答しないと「応答しませんでした」になる。
+// プロセスが1秒でも固まれば、その間の操作は種類を問わず全滅する（実際に
+// ランキング表示・ピッカー・取引ルーム作成が同じ秒に一斉に落ちた）。
+// node:sqlite は同期APIなので、重いクエリはここに素直に現れる。原因を推測しないための計測。
+let loopTick = Date.now();
+setInterval(() => {
+  const now = Date.now();
+  const stall = now - loopTick - 500; // 500ms周期からの遅れ＝止まっていた時間
+  loopTick = now;
+  if (stall >= 1000) {
+    const m = process.memoryUsage();
+    console.warn(
+      `⏱️ イベントループが ${stall}ms 停止（RSS ${Math.round(m.rss / 1048576)}MB` +
+        ` / heap ${Math.round(m.heapUsed / 1048576)}MB）`,
+    );
+  }
+}, 500).unref?.();
 
 if (!DISCORD_TOKEN || !CLIENT_ID) {
   console.error('❌ .env が未設定です（DISCORD_TOKEN / CLIENT_ID は必須）');
@@ -150,6 +170,13 @@ client.on(Events.GuildCreate, (guild) => {
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
+  // 押されてから応答までの実測。3秒を超えると「応答しませんでした」になるので、
+  // どのボタンが遅いのかを名前で残す（10062が出てから犯人を探さなくて済むように）。
+  const t0 = Date.now();
+  const label = interaction.customId || interaction.commandName || interaction.type;
+  const slowTimer = setTimeout(() => {
+    console.warn(`🐢 応答が2秒を超過中: ${label}`);
+  }, 2000);
   try {
     // サーバーロック：許可外サーバーからの操作は無視（保険）
     if (ALLOWED_GUILD && interaction.guildId && interaction.guildId !== ALLOWED_GUILD) {
@@ -174,8 +201,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
       console.error('50035詳細:', JSON.stringify(err.rawError.errors));
     }
     if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
-      interaction.reply({ content: '❌ エラーが発生したよ。', ephemeral: true }).catch(() => {});
+      interaction
+        .reply({ content: '❌ エラーが発生したよ。', flags: MessageFlags.Ephemeral })
+        .catch(() => {});
     }
+  } finally {
+    clearTimeout(slowTimer);
+    const ms = Date.now() - t0;
+    if (ms >= 2000) console.warn(`🐢 ${label} の処理に ${ms}ms かかった`);
   }
 });
 
