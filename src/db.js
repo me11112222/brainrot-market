@@ -12,6 +12,32 @@ const db = new DatabaseSync(join(__dirname, '..', 'data.sqlite'));
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA busy_timeout = 5000');
 
+// 遅いクエリの検出。
+// node:sqlite は同期APIなので、1本のクエリが遅いとその間Bot全体が停止し、
+// 押されたボタンが軒並み「応答しませんでした」になる（実測でイベントループが15.7秒停止）。
+// どのSQLが原因かをログで名指しするための計測。閾値未満は何も出さないので通常時は無音。
+const SLOW_QUERY_MS = 200;
+{
+  const rawPrepare = db.prepare.bind(db);
+  db.prepare = (sql) => {
+    const st = rawPrepare(sql);
+    for (const method of ['get', 'all', 'run']) {
+      if (typeof st[method] !== 'function') continue;
+      const orig = st[method].bind(st);
+      st[method] = (...a) => {
+        const t0 = Date.now();
+        const out = orig(...a);
+        const ms = Date.now() - t0;
+        if (ms >= SLOW_QUERY_MS) {
+          console.warn(`🐌 遅いクエリ ${ms}ms: ${sql.replace(/\s+/g, ' ').trim().slice(0, 140)}`);
+        }
+        return out;
+      };
+    }
+    return st;
+  };
+}
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS listings (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
